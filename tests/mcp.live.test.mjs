@@ -5,8 +5,9 @@ import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/cli
 
 const { startMcpServer } = await import('../mcp/main.mjs');
 
-// Real Fleet server, real members. Spends no LLM tokens: inspect-members makes
-// no agent() call. Needs `apra-fleet start` and provisioned members.
+// Spawns real Fleet over stdio. Spends no LLM tokens: inspect-members makes
+// no agent() call. Needs the apra-fleet binary; DEMO-REVIEWER must already
+// exist in Fleet's data dir (Docker provision, or a prior register).
 test('inspect-members reports on live members over MCP', { timeout: 180000 }, async () => {
   const { server, close } = await startMcpServer({ port: 0 });
   const url = new URL(`http://127.0.0.1:${server.address().port}/mcp`);

@@ -1,6 +1,9 @@
 # Stdio transport for Fleet communication
 
-Status: approved design, pending implementation plan.
+Status: implemented. The kit spawns `apra-fleet run --transport stdio` from
+`transport/stdio-fleet.mjs`. Launchers in `workflows/` and `mcp/main.mjs` call
+`spawnFleet()` instead of `connectFleet()`. The implementation plan is
+[stdio-transport-plan.md](stdio-transport-plan.md).
 
 ## Problem
 
