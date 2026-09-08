@@ -24,6 +24,8 @@ done
 if [ "$skip_provision" -eq 0 ]; then
   mkdir -p /workspace/workdir/DEMO-DOER /workspace/workdir/DEMO-REVIEWER
 
+  # HTTP Fleet is started only so provision-members.sh can register into the
+  # shared data dir. The MCP / workflow process spawns its own stdio child.
   echo "[entrypoint] starting Fleet server..."
   apra-fleet start
   n=0

@@ -1,7 +1,9 @@
 #!/bin/sh
 set -eu
 
-# Same commands as a host provision. Docker entrypoint runs this after `apra-fleet start`.
+# Same commands as a host provision. Docker entrypoint runs this after `apra-fleet start`
+# so DEMO-DOER / DEMO-REVIEWER exist in the shared data dir. Kit launchers spawn
+# stdio Fleet, which sees that same data dir.
 # Token comes from CLAUDE_CODE_OAUTH_TOKEN and goes straight into Fleet's credential store.
 
 REGISTRY="${HOME}/.apra-fleet/data/registry.json"

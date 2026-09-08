@@ -1,6 +1,12 @@
 # Stdio transport for Fleet communication
 
-Status: approved design, pending implementation plan.
+Status: implemented (kit launchers and `transport/stdio-fleet.mjs`). Failure-mode
+rows that the implementation plan did not require — throwing on a missing binary
+with a custom message, requiring `CLAUDE_CODE_OAUTH_TOKEN` before spawn, a
+configurable connect timeout, and wrapping unexpected child-exit as a custom
+error — are not implemented; spawn/connect/callTool errors from the MCP SDK
+propagate instead. OAuth is optional at spawn (plan); a missing token does not
+block `spawnFleet()`.
 
 ## Problem
 

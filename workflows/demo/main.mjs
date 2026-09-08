@@ -8,30 +8,21 @@ const engineScript = path.join(here, 'demo.js');
 export const selfExecuting = true;
 
 export async function runDemo({ fleetApi, signal, reportPhase } = {}) {
-  // Attach to `apra-fleet start` (where members + OAuth were provisioned).
-  // Unset transport would fall back to stdio spawn, which cannot find the
-  // npm-global server layout and would also miss those members.
-  if (!process.env.APRA_FLEET_TRANSPORT) {
-    process.env.APRA_FLEET_TRANSPORT = 'http';
-  }
   ensureApralabs();
   const { FleetWorkflow } = await import('@apralabs/apra-fleet-workflow');
   const { WorkflowEngine } = await import('@apralabs/apra-fleet-workflow/engine');
 
   let api = fleetApi;
-  let transport = null;
+  let stop = null;
   if (!api) {
-    try {
-      const { connectFleet } = await import('@apralabs/apra-fleet-client/server-resolution');
-      const connected = await connectFleet({ env: process.env });
-      api = connected.fleetApi;
-      transport = connected.transport;
-    } catch (err) {
-      const detail = err?.message ?? err;
-      const message = `Fleet server is not running or connectFleet() failed: ${detail}\nStart it with: cd ~/.apra-fleet/bin && apra-fleet start`;
-      console.error(message);
-      throw new Error(message, { cause: err });
-    }
+    const { spawnFleet } = await import('../../transport/stdio-fleet.mjs');
+    const repoRoot = path.resolve(here, '../..');
+    const fleet = await spawnFleet({
+      memberName: 'DEMO-DOER',
+      workFolder: path.join(repoRoot, 'workdir', 'DEMO-DOER'),
+    });
+    api = fleet.fleetApi;
+    stop = fleet.stop;
   }
 
   try {
@@ -39,7 +30,7 @@ export async function runDemo({ fleetApi, signal, reportPhase } = {}) {
     const engine = new WorkflowEngine(workflow);
     return await engine.executeFile(engineScript, { fleetApi: api, signal, reportPhase });
   } finally {
-    transport?.stop?.();
+    await stop?.();
   }
 }
 

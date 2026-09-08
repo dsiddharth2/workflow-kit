@@ -1,6 +1,6 @@
 # workflow-kit
 
-A workflow kit from [Apra Fleet](https://github.com/Apra-Labs/apra-fleet). Clone it, write your workflows and tools, `docker compose up`. Everything else — Fleet server, member registration, dependency installation, MCP server — is handled for you.
+A workflow kit from [Apra Fleet](https://github.com/Apra-Labs/apra-fleet). Clone it, write your workflows and tools, `docker compose up`. Everything else — Fleet install, member registration, dependency installation, MCP server — is handled for you. Workflows spawn Fleet over stdio; you do not need `apra-fleet start`.
 
 ## Quick start
 
@@ -37,9 +37,8 @@ Claude can now call your workflows as MCP tools.
 The Docker image handles everything on startup:
 
 1. Installs Fleet, Claude Code, and project dependencies
-2. Starts the Fleet server and waits for it to be ready
-3. Registers members and attaches your OAuth token
-4. Starts the MCP server on port 3000
+2. Starts an HTTP Fleet server long enough to provision members and attach your OAuth token
+3. Starts the MCP server on port 3000, which spawns its own Fleet child over stdio
 
 You only write two things:
 
@@ -54,7 +53,7 @@ You only write two things:
 
 ```text
 workflows/my-workflow/
-  main.mjs          # launcher: connects to Fleet, runs the engine, cleans up
+  main.mjs          # launcher: spawns Fleet over stdio, runs the engine, cleans up
   my-workflow.js    # body: receives engine context, does the work
 ```
 
@@ -75,16 +74,28 @@ export async function main(context) {
 }
 ```
 
-The launcher owns connection and cleanup. Copy the pattern from `workflows/demo/main.mjs`:
+The launcher owns spawn and cleanup. Copy the pattern from `workflows/demo/main.mjs`:
 
 ```js
 // workflows/my-workflow/main.mjs
 export async function runMyWorkflow({ fleetApi } = {}) {
-  if (!process.env.APRA_FLEET_TRANSPORT) {
-    process.env.APRA_FLEET_TRANSPORT = 'http';
-  }
   ensureApralabs();
-  // …connect if fleetApi wasn't injected, execute the body, stop the transport in finally
+  let api = fleetApi;
+  let stop = null;
+  if (!api) {
+    const { spawnFleet } = await import('../../transport/stdio-fleet.mjs');
+    const fleet = await spawnFleet({
+      memberName: 'MY-DOER',
+      workFolder: path.join(repoRoot, 'workdir', 'MY-DOER'),
+    });
+    api = fleet.fleetApi;
+    stop = fleet.stop;
+  }
+  try {
+    // …execute the body
+  } finally {
+    await stop?.();
+  }
 }
 ```
 
@@ -107,7 +118,9 @@ No changes to `server.mjs` or `http.mjs` needed — the registry is data.
 
 ### 3. Register your members
 
-Add your members to `scripts/provision-members.sh`:
+Pass `memberName` and `workFolder` to `spawnFleet()` in the launcher so they are
+registered when Fleet starts. Also add them to `scripts/provision-members.sh` if you
+use Docker (the entrypoint provisions into Fleet's shared data dir):
 
 ```bash
 apra-fleet register-member --type local --llm claude \
@@ -132,17 +145,18 @@ If you prefer running directly on your machine:
 # Install Fleet globally
 npm install -g @apralabs/apra-fleet
 apra-fleet install
-apra-fleet start                    # leave running
 
 # Install project deps
 npm install
 
-# Provision members and token
-scripts/provision-members.sh
+# Token for live agent() calls
+export CLAUDE_CODE_OAUTH_TOKEN="$(claude setup-token)"
 
-# Start the MCP server
+# Start the MCP server (spawns Fleet over stdio)
 npm run mcp
 ```
+
+`apra-fleet start` is not required. Set `APRA_FLEET_BIN` if the binary is not on PATH.
 
 ---
 
@@ -160,20 +174,21 @@ node workflows/demo/main.mjs
 
 ## Testing
 
-Tests run without a Fleet server, without members, and without tokens:
+Tests run without a Fleet binary, without members, and without tokens:
 
 ```bash
 npm test                                                              # all mock tests
 docker compose run --rm fleet node --test tests/demo.test.mjs         # in Docker
 ```
 
-The mock tests inject a fake `fleetApi` and assert real behavior — member registration, command dispatch, agent calls. Write mock tests first when adding workflows.
+The mock tests inject a fake `fleetApi` and assert real behavior — command dispatch, transform, agent calls. Write mock tests first when adding workflows.
 
-Live tests need a running Fleet server and a token:
+Live tests need the `apra-fleet` binary (they spawn it over stdio). `demo.live` also needs a token:
 
 ```bash
-node --test tests/demo.live.test.mjs        # full workflow with real LLM
-node --test tests/mcp.live.test.mjs         # MCP server against live Fleet
+node --test tests/stdio-fleet.live.test.mjs  # spawn + fleetStatus; skips if no binary
+node --test tests/demo.live.test.mjs         # full workflow with real LLM
+node --test tests/mcp.live.test.mjs          # MCP server against live stdio Fleet
 ```
 
 ---
@@ -188,13 +203,15 @@ node --test tests/mcp.live.test.mjs         # MCP server against live Fleet
 │     │              entry. Claude chooses from descriptions.  │
 │     │ entry.run({ fleetApi, args, signal, reportPhase })    │
 │     ▼                                                       │
-│   workflows/       runDemo() — connect + execute             │
+│   workflows/       runDemo() — spawn + execute               │
 │     │              Your workflow bodies live here.           │
+│     ▼                                                       │
+│   transport/       spawnFleet() — StdioClientTransport       │
 └─────┼───────────────────────────────────────────────────────┘
-      │ MCP over HTTP
+      │ MCP JSON-RPC over stdin/stdout
       ▼
 ┌─────────────────────────────────────────────────────────────┐
-│  Fleet server        http://127.0.0.1:7523/mcp              │
+│  apra-fleet child     `run --transport stdio`               │
 │                                                             │
 │   YOUR-DOER                     YOUR-REVIEWER               │
 │   workdir/YOUR-DOER/            workdir/YOUR-REVIEWER/      │
@@ -204,17 +221,18 @@ node --test tests/mcp.live.test.mjs         # MCP server against live Fleet
 
 Four ideas explain most of the code:
 
-- **Launcher / body split.** `main.mjs` owns connection, transport and cleanup; the `.js` body only does the work. That is what keeps bodies testable.
-- **`fleetApi` is injected.** Launchers connect only when no client is passed in, so mock tests run with no server and no tokens.
+- **Launcher / body split.** `main.mjs` owns spawn, transport and cleanup; the `.js` body only does the work. That is what keeps bodies testable.
+- **`fleetApi` is injected.** Launchers spawn only when no client is passed in, so mock tests run with no binary and no tokens.
 - **Fleet is a machine install, not a dependency.** `ensureApralabs()` symlinks `node_modules/@apralabs` to the Fleet install. No `@apralabs/*` in `package.json`.
-- **Transport is pinned to `http`.** Left unset, the client would spawn Fleet over stdio and miss your provisioned members.
+- **Downstream Fleet is stdio.** Launchers call `spawnFleet()`. `APRA_FLEET_TRANSPORT` is not used. Members are registered at spawn time, not in the workflow body.
 
 ---
 
 ## Setting up the OAuth token
 
-The OAuth token goes directly into Fleet's credential store — no files saved to disk.
-Fleet spawns Claude (not your Node process), so the token must live in Fleet's store.
+The OAuth token is inherited by the spawned Fleet child via `CLAUDE_CODE_OAUTH_TOKEN`
+and attached to the member with `provision_llm_auth`. Fleet spawns Claude (not your
+Node process), so the token must reach that child.
 
 ### Local development
 
@@ -222,8 +240,8 @@ Fleet spawns Claude (not your Node process), so the token must live in Fleet's s
 apra-fleet auth --oauth --member DEMO-DOER "$(claude setup-token)"
 ```
 
-`claude setup-token` opens a browser login and outputs the token. `apra-fleet auth`
-writes it straight into Fleet's credential store on the member.
+`claude setup-token` opens a browser login and outputs the token. Export it (or pass
+it to `spawnFleet({ oauthToken })`) so the stdio child can attach it to the member.
 
 ### Docker / VM
 
@@ -239,7 +257,9 @@ docker compose up -d
 ```
 
 The provision script picks up the env var and runs `apra-fleet auth` inside the
-container automatically. The `-d` flag runs the container in the background.
+container (against the entrypoint's HTTP Fleet) so the shared data dir has the token.
+The MCP process also inherits the env var when it spawns stdio Fleet. The `-d` flag
+runs the container in the background.
 
 ### CI (GitHub Actions, Azure Pipelines, etc.)
 
@@ -256,7 +276,8 @@ in Fleet's in-memory credential store.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `CLAUDE_CODE_OAUTH_TOKEN` | — | OAuth token for live `agent()` calls |
+| `CLAUDE_CODE_OAUTH_TOKEN` | — | OAuth token inherited by spawned Fleet processes |
+| `APRA_FLEET_BIN` | `apra-fleet` on PATH | Fleet binary when it is not on PATH |
 | `MCP_PORT` | `3000` | Host port mapped to the MCP server |
 | `MCP_BIND_HOST` | `0.0.0.0` (compose) / `127.0.0.1` (local) | MCP server bind address |
 
@@ -273,12 +294,14 @@ MCP_PORT=4000 docker compose up
 ```text
 workflows/
   demo/                 # demo workflow — replace with your own
-    main.mjs            # launcher: connectFleet, execute, exit
-    demo.js             # body: register, status, command, transform, agent
+    main.mjs            # launcher: spawnFleet, execute, stop()
+    demo.js             # body: status, command, transform, agent
     dummy.py            # stand-in for real Python work
     ensure-apralabs.mjs # symlinks @apralabs packages from Fleet install
   inspect-members/      # read-only member inspection workflow
     main.mjs, inspect-members.js, inspect.py
+transport/
+  stdio-fleet.mjs       # spawn apra-fleet over stdio, wrap as fleetApi
 mcp/
   main.mjs              # MCP server launcher, configurable bind address
   server.mjs            # one MCP tool per registry entry
@@ -287,14 +310,15 @@ mcp/
   auth.mjs              # injectable auth stub (replace for production)
   fleet-text.mjs        # extract text from Fleet MCP results
 scripts/
-  docker-entrypoint.sh  # start Fleet, install deps, provision, exec
-  provision-members.sh  # register members + attach OAuth
+  docker-entrypoint.sh  # start HTTP Fleet, install deps, provision, exec
+  provision-members.sh  # register members + attach OAuth (Docker / shared data dir)
 tests/                  # mock and live test suites
 workdir/                # member working directories (one per member)
 docs/
   architecture.md       # layers, data flow, design decisions
-  development.md        # setup, testing, conventions
+  development.md        # setup, testing, adding workflows, conventions
   mcp-interface.md      # MCP tool reference, timeouts, auth, hosting
+  specs/                # stdio transport spec and implementation plan
 Dockerfile
 docker-compose.yml
 ```
@@ -305,10 +329,11 @@ docker-compose.yml
 
 | Symptom | Fix |
 |---|---|
-| `connectFleet() failed` | Fleet server is down. `apra-fleet start`, then retry. |
+| `apra-fleet` not found / spawn error | Install Fleet (`npm install -g @apralabs/apra-fleet && apra-fleet install`) or set `APRA_FLEET_BIN`. |
+| `Fleet MCP server is missing required tools` | Need a Fleet build that supports `run --transport stdio`. |
 | `"host" is required for remote members` | Add `--type local` to `register-member`. |
 | `Member "…" not found` on `auth` | Register the member first, then `auth`. |
-| `OAuth session expired` | `claude setup-token`, re-run `apra-fleet auth --oauth --member …`. |
+| `OAuth session expired` | `claude setup-token`, export `CLAUDE_CODE_OAUTH_TOKEN`, re-run. |
 | `Cannot find package 'undici'` | Stale `@apralabs` symlink. Delete `node_modules/@apralabs` and re-run. |
 | Live run prints `pong` but never exits | Transport not stopped — check the launcher's `finally` block. |
 | MCP tool not chosen by Claude | Improve its `description` in `mcp/registry.mjs`. |
@@ -323,3 +348,4 @@ docker-compose.yml
 | [docs/architecture.md](docs/architecture.md) | Fleet concepts, layer diagram, module map, design decisions |
 | [docs/development.md](docs/development.md) | First-time setup, testing, adding workflows, conventions |
 | [docs/mcp-interface.md](docs/mcp-interface.md) | MCP tool catalog, registry contract, timeouts, auth, hosting |
+| [docs/specs/stdio-transport-spec.md](docs/specs/stdio-transport-spec.md) | Stdio Fleet transport design |

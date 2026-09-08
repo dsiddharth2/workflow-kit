@@ -6,17 +6,15 @@
     "node": ">=22.16"
   },
   "scripts": {
-    "test": "node --test tests/demo.test.mjs tests/inspect-members.test.mjs tests/mcp.test.mjs",
+    "test": "node --test tests/transport-stdio-fleet.test.mjs tests/demo.test.mjs tests/inspect-members.test.mjs tests/mcp.test.mjs",
     "mcp": "node mcp/main.mjs"
   },
   "dependencies": {
+    "@modelcontextprotocol/client": "^2.0.0",
     "@modelcontextprotocol/express": "^2.0.0",
     "@modelcontextprotocol/node": "^2.0.0",
     "@modelcontextprotocol/server": "^2.0.0",
     "express": "^5.1.0",
     "zod": "^4.4.3"
-  },
-  "devDependencies": {
-    "@modelcontextprotocol/client": "^2.0.0"
   }
 }

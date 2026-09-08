@@ -16,34 +16,20 @@ export async function runInspectMembers({
   signal,
   reportPhase,
 } = {}) {
-  // Attach to `apra-fleet start` (where members were provisioned). Unset
-  // transport would fall back to a stdio spawn that cannot see them.
-  if (!process.env.APRA_FLEET_TRANSPORT) {
-    process.env.APRA_FLEET_TRANSPORT = 'http';
-  }
   ensureApralabs();
   const { FleetWorkflow } = await import('@apralabs/apra-fleet-workflow');
   const { WorkflowEngine } = await import('@apralabs/apra-fleet-workflow/engine');
 
   let api = fleetApi;
-  let transport = null;
+  let stop = null;
   if (!api) {
-    try {
-      const { connectFleet } = await import('@apralabs/apra-fleet-client/server-resolution');
-      const connected = await connectFleet({ env: process.env });
-      api = connected.fleetApi;
-      transport = connected.transport;
-    } catch (err) {
-      const detail = err?.message ?? err;
-      const message = `Fleet server is not running or connectFleet() failed: ${detail}\nStart it with: cd ~/.apra-fleet/bin && apra-fleet start`;
-      console.error(message);
-      throw new Error(message, { cause: err });
-    }
+    const { spawnFleet } = await import('../../transport/stdio-fleet.mjs');
+    const fleet = await spawnFleet({});
+    api = fleet.fleetApi;
+    stop = fleet.stop;
   }
 
   try {
-    // WorkflowEngine consumes failSoft before dispatch. Keep it observable to
-    // injected APIs without letting FleetApi serialize it into the MCP payload.
     const workflowApi = {
       executeCommand(options) {
         Object.defineProperty(options, 'failSoft', { value: true, enumerable: false });
@@ -60,7 +46,7 @@ export async function runInspectMembers({
       reportPhase,
     });
   } finally {
-    transport?.stop?.();
+    await stop?.();
   }
 }
 

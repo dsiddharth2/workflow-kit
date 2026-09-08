@@ -2,6 +2,9 @@ import './setup-fleet-modules.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
+// Spawns Fleet over stdio via runDemo() with no injected fleetApi.
+// Needs the apra-fleet binary and CLAUDE_CODE_OAUTH_TOKEN. No `apra-fleet start`.
+
 const { runDemo } = await import('../workflows/demo/main.mjs');
 
 function asText(value) {
