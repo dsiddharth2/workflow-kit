@@ -196,6 +196,9 @@ spawned once when the MCP server starts, and killed when the MCP server closes.
 `transport/stdio-fleet.mjs`. `APRA_FLEET_TRANSPORT` is not used. The wrapper discovers
 Fleet's tool names via `listTools()` at connect time and maps camelCase `fleetApi`
 methods onto those names. A missing required tool fails at spawn, not on first call.
+`executeCommand` / `executePrompt` strip `timeoutMs`, `signal`, and `failSoft` from the
+tool payload and pass them as MCP client options. The client timeout defaults to 15
+minutes (same as `@apralabs/apra-fleet-client`), not the SDK's 60s.
 
 **Registration happens at spawn time.** A freshly spawned Fleet process starts empty, so
 `spawnFleet({ memberName, workFolder })` registers the member before any workflow phase

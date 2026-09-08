@@ -1,9 +1,12 @@
 # Stdio transport for Fleet communication
 
-Status: implemented. The kit spawns `apra-fleet run --transport stdio` from
-`transport/stdio-fleet.mjs`. Launchers in `workflows/` and `mcp/main.mjs` call
-`spawnFleet()` instead of `connectFleet()`. The implementation plan is
-[stdio-transport-plan.md](stdio-transport-plan.md).
+Status: implemented (kit launchers and `transport/stdio-fleet.mjs`). Failure-mode
+rows that the implementation plan did not require — throwing on a missing binary
+with a custom message, requiring `CLAUDE_CODE_OAUTH_TOKEN` before spawn, a
+configurable connect timeout, and wrapping unexpected child-exit as a custom
+error — are not implemented; spawn/connect/callTool errors from the MCP SDK
+propagate instead. OAuth is optional at spawn (plan); a missing token does not
+block `spawnFleet()`.
 
 ## Problem
 
