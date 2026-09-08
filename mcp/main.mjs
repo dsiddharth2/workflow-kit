@@ -1,38 +1,27 @@
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { ensureApralabs } from '../workflows/demo/ensure-apralabs.mjs';
 import { createMcpHttpApp } from './http.mjs';
 import { buildMcpServer } from './server.mjs';
 
 export async function startMcpServer({ fleetApi, port } = {}) {
-  // Attach to `apra-fleet start` (where members + OAuth were provisioned) —
-  // same reasoning as workflows/demo/main.mjs.
-  if (!process.env.APRA_FLEET_TRANSPORT) {
-    process.env.APRA_FLEET_TRANSPORT = 'http';
-  }
   ensureApralabs();
 
   let api = fleetApi;
-  let transport = null;
+  let stopFleet = null;
   if (!api) {
-    try {
-      const { connectFleet } = await import('@apralabs/apra-fleet-client/server-resolution');
-      const connected = await connectFleet({ env: process.env });
-      api = connected.fleetApi;
-      transport = connected.transport;
-    } catch (err) {
-      const detail = err?.message ?? err;
-      throw new Error(
-        `Fleet server is not running or connectFleet() failed: ${detail}\nStart it with: cd ~/.apra-fleet/bin && apra-fleet start`,
-        { cause: err },
-      );
-    }
+    const { spawnFleet } = await import('../transport/stdio-fleet.mjs');
+    const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+    const fleet = await spawnFleet({
+      memberName: 'DEMO-DOER',
+      workFolder: path.join(repoRoot, 'workdir', 'DEMO-DOER'),
+    });
+    api = fleet.fleetApi;
+    stopFleet = fleet.stop;
   }
 
   const app = createMcpHttpApp({ buildServer: () => buildMcpServer({ fleetApi: api }) });
   const listenPort = port ?? Number(process.env.PORT ?? 3000);
-  // Bind loopback by default. Hosting this on a VM needs an explicit bind
-  // address AND real authentication — see docs/mcp-interface.md.
   const bindHost = process.env.MCP_BIND_HOST || '127.0.0.1';
   let server;
   try {
@@ -58,7 +47,7 @@ export async function startMcpServer({ fleetApi, port } = {}) {
       }
     }
     try {
-      await transport?.stop?.();
+      await stopFleet?.();
     } catch {
       // Preserve the listener error after best-effort Fleet cleanup.
     }
@@ -68,7 +57,7 @@ export async function startMcpServer({ fleetApi, port } = {}) {
 
   const close = async () => {
     await new Promise((resolve) => server.close(resolve));
-    transport?.stop?.();
+    await stopFleet?.();
   };
   return { server, close };
 }
