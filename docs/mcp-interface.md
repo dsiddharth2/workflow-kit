@@ -1,29 +1,33 @@
 # MCP interface
 
 The process exposes workflows to Claude Code as MCP tools at `POST /mcp`. It is an MCP
-server on this side and an MCP client of the Fleet server underneath. The HTTP layer is
-stateless: each tool call receives a fresh MCP server and transport.
+server on this side and an MCP client of a spawned Fleet process underneath (stdio).
+The HTTP layer is stateless: each tool call receives a fresh upstream MCP server and
+transport. The downstream Fleet child is spawned once when this server starts.
 
 ## Setup
 
-Install dependencies, start Fleet, provision the members, and start the MCP server:
+Install Fleet and project dependencies, export a token if you need `demo`, and start
+the MCP server. `apra-fleet start` is not required.
 
 ```bash
+npm install -g @apralabs/apra-fleet
+apra-fleet install
 npm install
-apra-fleet start
-scripts/provision-members.sh
+export CLAUDE_CODE_OAUTH_TOKEN="$(claude setup-token)"   # only for demo / agent()
 npm run mcp
 ```
 
-Leave both servers running, then register this server with Claude Code:
+`startMcpServer()` calls `spawnFleet()` for `DEMO-DOER`. Register this server with
+Claude Code:
 
 ```bash
 claude mcp add --transport http fleet http://127.0.0.1:3000/mcp
 ```
 
-`provision-members.sh` expects the same token setup described in the
-[development guide](development.md). The MCP server binds to loopback and port 3000 by
-default.
+OAuth setup is described in the [development guide](development.md). The MCP server
+binds to loopback and port 3000 by default. Set `APRA_FLEET_BIN` if `apra-fleet` is not
+on PATH.
 
 ## Tool catalog
 
@@ -132,7 +136,7 @@ tokens. `MAX_MCP_OUTPUT_TOKENS` controls the truncation limit. Independently,
 
 | Symptom | Fix |
 |---|---|
-| `connectFleet() failed` | Start Fleet with `apra-fleet start`, then restart the MCP server. |
+| `apra-fleet` spawn error | Install Fleet or set `APRA_FLEET_BIN`, then restart the MCP server. |
 | `OAuth session expired` | Re-authenticate `DEMO-DOER` in Fleet's credential store. |
 | A tool is not chosen | Improve its `description` in `mcp/registry.mjs` so the model knows when to use it. |
 | A tool call times out | Set `"timeout"` in that server's `.mcp.json` entry; use `600000` for a ten-minute allowance. |
