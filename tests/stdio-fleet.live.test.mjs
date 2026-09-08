@@ -37,6 +37,9 @@ if (!fleetBin) {
       assert.ok(status.content, 'fleetStatus should return a content envelope');
       assert.ok(status.content.length > 0, 'fleetStatus content should not be empty');
     } finally {
+      try {
+        await fleetApi.removeMember?.({ member_name: 'LIVE-TEST' });
+      } catch { /* best effort */ }
       await stop();
       fs.rmSync(workFolder, { recursive: true, force: true });
     }
@@ -54,6 +57,9 @@ if (!fleetBin) {
       const text = result.content.map((p) => p.text).join('\n');
       assert.ok(text.includes('LIVE-MEMBER'), `expected LIVE-MEMBER in: ${text}`);
     } finally {
+      try {
+        await fleetApi.removeMember?.({ member_name: 'LIVE-MEMBER' });
+      } catch { /* best effort */ }
       await stop();
       fs.rmSync(workFolder, { recursive: true, force: true });
     }
