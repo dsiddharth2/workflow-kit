@@ -14,9 +14,8 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
 
 COPY scripts/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
-COPY scripts/provision-members.sh /usr/local/bin/provision-members.sh
-RUN sed -i 's/\r$//' /usr/local/bin/docker-entrypoint.sh /usr/local/bin/provision-members.sh \
-  && chmod +x /usr/local/bin/docker-entrypoint.sh /usr/local/bin/provision-members.sh
+RUN sed -i 's/\r$//' /usr/local/bin/docker-entrypoint.sh \
+  && chmod +x /usr/local/bin/docker-entrypoint.sh
 
 COPY . .
 

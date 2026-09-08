@@ -10,14 +10,19 @@ export async function startMcpServer({ fleetApi, port } = {}) {
   let api = fleetApi;
   let stopFleet = null;
   if (!api) {
-    const { spawnFleet } = await import('../transport/stdio-fleet.mjs');
+    const { spawnFleet, ensureRegistered } = await import('../transport/stdio-fleet.mjs');
     const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+    const workdir = path.join(repoRoot, 'workdir');
     const fleet = await spawnFleet({
       memberName: 'DEMO-DOER',
-      workFolder: path.join(repoRoot, 'workdir', 'DEMO-DOER'),
+      workFolder: path.join(workdir, 'DEMO-DOER'),
     });
     api = fleet.fleetApi;
     stopFleet = fleet.stop;
+
+    // Register the reviewer too — inspect-members reports on both, and the
+    // provisioning script no longer runs at startup.
+    await ensureRegistered(api, 'DEMO-REVIEWER', path.join(workdir, 'DEMO-REVIEWER'));
   }
 
   const app = createMcpHttpApp({ buildServer: () => buildMcpServer({ fleetApi: api }) });

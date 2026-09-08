@@ -81,7 +81,7 @@ export async function createFleetApi(client) {
   return api;
 }
 
-async function ensureRegistered(fleetApi, memberName, workFolder) {
+export async function ensureRegistered(fleetApi, memberName, workFolder) {
   const listed = await fleetApi.listMembers({});
   if (memberListed(listed, memberName)) return;
 

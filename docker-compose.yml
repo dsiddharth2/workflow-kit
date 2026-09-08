@@ -9,8 +9,8 @@ services:
     environment:
       CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
       MCP_BIND_HOST: "0.0.0.0"
-    # Default: provision (HTTP Fleet) + MCP server. The MCP process spawns
-    # Fleet over stdio. Override for anything else:
+    # Default: MCP server. Fleet is spawned over stdio on demand.
+    # Override for anything else:
     #   docker compose run --rm fleet node workflows/demo/main.mjs
     #   docker compose run --rm fleet node --test tests/demo.test.mjs
 
