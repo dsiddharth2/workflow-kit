@@ -9,8 +9,8 @@ export const defaultRegistry = [
   {
     name: 'demo',
     description:
-      'Runs the demo workflow end to end: registers the DEMO members, ' +
-      'runs the dummy python command, the transform, and an agent smoke test. ' +
+      'Runs the demo workflow end to end: fleet status, the dummy python command, ' +
+      'the transform, and an agent smoke test. DEMO-DOER is registered when Fleet is spawned. ' +
       'Choose this to run the demo workflow or to verify that Fleet plumbing works. ' +
       'Spends LLM tokens and can take a minute.',
     annotations: { readOnlyHint: false, idempotentHint: true },

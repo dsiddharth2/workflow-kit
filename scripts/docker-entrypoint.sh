@@ -13,35 +13,20 @@ fi
 echo "[entrypoint] linking @apralabs packages..."
 node -e "import('./workflows/demo/ensure-apralabs.mjs').then(m => m.ensureApralabs())" 2>/dev/null || true
 
-skip_provision=0
-for arg in "$@"; do
-  if [ "$arg" = "--test" ]; then
-    skip_provision=1
-    break
-  fi
-done
+# Create work folders so they exist before spawnFleet registers members.
+mkdir -p /workspace/workdir/DEMO-DOER /workspace/workdir/DEMO-REVIEWER
 
-if [ "$skip_provision" -eq 0 ]; then
-  mkdir -p /workspace/workdir/DEMO-DOER /workspace/workdir/DEMO-REVIEWER
+# Register members and provision OAuth before the Fleet child process starts,
+# so it inherits working auth from the data directory on disk.
+echo "[entrypoint] registering Fleet members..."
+apra-fleet register-member --type local --llm claude \
+  --name DEMO-DOER --path /workspace/workdir/DEMO-DOER 2>/dev/null || true
+apra-fleet register-member --type local --llm claude \
+  --name DEMO-REVIEWER --path /workspace/workdir/DEMO-REVIEWER 2>/dev/null || true
 
-  echo "[entrypoint] starting Fleet server..."
-  apra-fleet start
-  n=0
-  while [ "$n" -lt 120 ]; do
-    if apra-fleet status >/dev/null 2>&1; then
-      echo "[entrypoint] Fleet server is ready."
-      break
-    fi
-    n=$((n + 1))
-    sleep 0.5
-  done
-  if ! apra-fleet status >/dev/null 2>&1; then
-    echo "[entrypoint] Fleet server did not become ready within 60s after 'apra-fleet start'." >&2
-    exit 1
-  fi
-
-  echo "[entrypoint] provisioning members..."
-  /usr/local/bin/provision-members.sh
+if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+  echo "[entrypoint] provisioning OAuth for DEMO-DOER..."
+  apra-fleet auth --oauth --member DEMO-DOER "$CLAUDE_CODE_OAUTH_TOKEN" || true
 fi
 
 echo "[entrypoint] exec: $*"

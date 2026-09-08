@@ -11,17 +11,11 @@ const { createMcpHttpApp } = await import('../mcp/http.mjs');
 const { startMcpServer } = await import('../mcp/main.mjs');
 
 function createMockFleetApi() {
-  const registerCalls = [];
   const commandCalls = [];
   const promptCalls = [];
   return {
-    registerCalls,
     commandCalls,
     promptCalls,
-    async registerMember(options) {
-      registerCalls.push(options);
-      return { content: [{ type: 'text', text: `registered ${options.friendly_name}` }] };
-    },
     async fleetStatus() {
       return {
         content: [{ type: 'text', text: 'DEMO-DOER\nDEMO-REVIEWER' }],
