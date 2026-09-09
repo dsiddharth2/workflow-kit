@@ -10,6 +10,30 @@ const { buildMcpServer } = await import('../mcp/server.mjs');
 const { createMcpHttpApp } = await import('../mcp/http.mjs');
 const { startMcpServer } = await import('../mcp/main.mjs');
 
+function mockPayloadForCommand(command) {
+  if (command.includes('weather.py')) {
+    return JSON.stringify({
+      ok: true, location: 'London, United Kingdom', temp_c: '15',
+      temp_f: '59', feels_like_c: '14', humidity: '72',
+      description: 'Partly cloudy', wind_speed_kmph: '11',
+      wind_dir: 'WSW', visibility_km: '10', uv_index: '3',
+    });
+  }
+  if (command.includes('timezone.py')) {
+    return JSON.stringify({
+      ok: true, timezone: 'Europe/London', datetime: '2025-06-15T14:30:00+01:00',
+      utc_offset: '+01:00', day_of_week: 0, abbreviation: 'BST',
+    });
+  }
+  if (command.includes('textstats.py')) {
+    return JSON.stringify({
+      ok: true, char_count: 26, word_count: 5,
+      sentence_count: 1, unique_words: 5, avg_word_length: 4.2,
+    });
+  }
+  return JSON.stringify({ root: '/tmp/x', exists: true, fileCount: 1, totalBytes: 4 });
+}
+
 function createMockFleetApi() {
   const commandCalls = [];
   const promptCalls = [];
@@ -23,7 +47,7 @@ function createMockFleetApi() {
     },
     async executeCommand(options) {
       commandCalls.push(options);
-      const payload = JSON.stringify({ root: '/tmp/x', exists: true, fileCount: 1, totalBytes: 4 });
+      const payload = mockPayloadForCommand(options.command ?? '');
       return {
         content: [{ type: 'text', text: payload }],
         structuredContent: { stdout: payload, exitCode: 0 },
@@ -108,7 +132,10 @@ test('startMcpServer removes its startup error listener after listening', async 
 test('advertises exactly the registry tools, with schemas and annotations', async () => {
   await withServer(undefined, async ({ client }) => {
     const { tools } = await client.listTools();
-    assert.deepEqual(tools.map((tool) => tool.name).sort(), ['demo', 'inspect-members']);
+    assert.deepEqual(
+      tools.map((tool) => tool.name).sort(),
+      ['city-briefing', 'demo', 'inspect-members', 'textstats', 'timezone', 'weather'],
+    );
 
     const inspect = tools.find((tool) => tool.name === 'inspect-members');
     assert.deepEqual(Object.keys(inspect.inputSchema.properties).sort(), ['includeFiles', 'members']);
@@ -121,6 +148,19 @@ test('advertises exactly the registry tools, with schemas and annotations', asyn
     const demo = tools.find((tool) => tool.name === 'demo');
     assert.deepEqual(demo.inputSchema.properties ?? {}, {});
     assert.equal(demo.annotations.readOnlyHint, false);
+
+    const weather = tools.find((tool) => tool.name === 'weather');
+    assert.ok(weather.inputSchema.properties.city, 'weather should have a city param');
+    assert.equal(weather.annotations.readOnlyHint, true);
+    assert.equal(weather.annotations.idempotentHint, true);
+
+    const timezone = tools.find((tool) => tool.name === 'timezone');
+    assert.ok(timezone.inputSchema.properties.city, 'timezone should have a city param');
+    assert.equal(timezone.annotations.readOnlyHint, true);
+
+    const textstats = tools.find((tool) => tool.name === 'textstats');
+    assert.ok(textstats.inputSchema.properties.text, 'textstats should have a text param');
+    assert.equal(textstats.annotations.readOnlyHint, true);
   });
 });
 
@@ -224,6 +264,61 @@ test('a client that does not request progress still gets the result', async () =
     const result = await client.callTool({ name: 'inspect-members', arguments: {} });
     assert.equal(result.isError, undefined);
     assert.ok(JSON.parse(result.content[0].text).members.length >= 1);
+  });
+});
+
+test('calling weather returns parsed weather data', async () => {
+  await withServer(undefined, async ({ client, fleetApi }) => {
+    const result = await client.callTool({ name: 'weather', arguments: { city: 'Paris' } });
+    assert.equal(result.isError, undefined);
+    const data = JSON.parse(result.content[0].text);
+    assert.equal(data.ok, true);
+    assert.equal(data.location, 'London, United Kingdom');
+    assert.equal(fleetApi.commandCalls.length, 1);
+    assert.match(fleetApi.commandCalls[0].command, /weather\.py.*Paris/);
+    assert.equal(fleetApi.commandCalls[0].member_name, 'DEMO-DOER');
+  });
+});
+
+test('weather defaults to London when no city given', async () => {
+  await withServer(undefined, async ({ client, fleetApi }) => {
+    const result = await client.callTool({ name: 'weather', arguments: {} });
+    assert.equal(result.isError, undefined);
+    assert.match(fleetApi.commandCalls[0].command, /weather\.py.*London/);
+  });
+});
+
+test('calling timezone returns parsed timezone data', async () => {
+  await withServer(undefined, async ({ client, fleetApi }) => {
+    const result = await client.callTool({ name: 'timezone', arguments: { city: 'Tokyo' } });
+    assert.equal(result.isError, undefined);
+    const data = JSON.parse(result.content[0].text);
+    assert.equal(data.ok, true);
+    assert.equal(data.timezone, 'Europe/London');
+    assert.match(fleetApi.commandCalls[0].command, /timezone\.py.*Tokyo/);
+  });
+});
+
+test('calling textstats returns parsed analysis', async () => {
+  await withServer(undefined, async ({ client, fleetApi }) => {
+    const result = await client.callTool({
+      name: 'textstats',
+      arguments: { text: 'Hello world this is a test' },
+    });
+    assert.equal(result.isError, undefined);
+    const data = JSON.parse(result.content[0].text);
+    assert.equal(data.ok, true);
+    assert.equal(typeof data.word_count, 'number');
+    assert.equal(typeof data.char_count, 'number');
+    assert.match(fleetApi.commandCalls[0].command, /textstats\.py/);
+  });
+});
+
+test('textstats rejects call with missing required text param', async () => {
+  await withServer(undefined, async ({ client }) => {
+    const result = await client.callTool({ name: 'textstats', arguments: {} });
+    assert.equal(result.isError, true);
+    assert.match(result.content[0].text, /text/);
   });
 });
 
