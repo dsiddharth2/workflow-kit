@@ -129,33 +129,25 @@ Follow the existing shape rather than inventing a new one.
 **1. Create the launcher and body.** Copy the split from `workflows/demo/`: a
 `main.mjs` that owns spawn, transport cleanup and the exported entry function, and
 a body file that only knows how to do the work given the engine `context`. The entry
-function must accept `{ fleetApi }` so it stays testable.
+function must accept `{ fleetApi, workspace }` so it stays testable. Address
+`'doer'` and `'reviewer'`, never a hardcoded member name.
 
 ```js
-export async function runMyWorkflow({ fleetApi } = {}) {
+import { withStandaloneLease } from '../standalone.mjs';
+import { ensureApralabs } from '../demo/ensure-apralabs.mjs';
+
+export async function runMyWorkflow({ fleetApi, workspace, signal, reportPhase } = {}) {
   ensureApralabs();
-  let api = fleetApi;
-  let stop = null;
-  if (!api) {
-    const { spawnFleet } = await import('../../transport/stdio-fleet.mjs');
-    const fleet = await spawnFleet({
-      memberName: 'MY-DOER',
-      workFolder: path.join(repoRoot, 'workdir', 'MY-DOER'),
-    });
-    api = fleet.fleetApi;
-    stop = fleet.stop;
+  if (!fleetApi) {
+    return withStandaloneLease((ctx) => runMyWorkflow({ ...ctx, reportPhase }));
   }
-  try {
-    // …execute the body
-  } finally {
-    await stop?.();
-  }
+  // …execute the body
 }
 ```
 
 **2. Write a mock test first.** Reuse the mock-client pattern. Assert the calls you care
-about — which members, which commands, which prompts. Do not put registration in the
-body if `spawnFleet()` already owns it.
+about — which roles, which commands, which prompts. Do not put registration in the
+body; `withStandaloneLease` / MemberManager own spawn and registration.
 
 **3. Expose it as an MCP tool, if it should be.** Append an entry to `defaultRegistry`
 in `mcp/registry.mjs`:
@@ -166,8 +158,8 @@ in `mcp/registry.mjs`:
   description: 'What this does and when a model should choose it.',
   inputSchema: z.object({ target: z.string().describe('What to act on') }),
   annotations: { readOnlyHint: true },
-  async run({ fleetApi, args, signal, reportPhase }) {
-    return await runMyWorkflow({ fleetApi, signal, reportPhase, target: args.target });
+  async run({ fleetApi, args, signal, reportPhase, workspace }) {
+    return await runMyWorkflow({ fleetApi, signal, reportPhase, workspace, target: args.target });
   },
 }
 ```

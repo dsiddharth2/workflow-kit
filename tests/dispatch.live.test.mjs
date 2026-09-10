@@ -36,8 +36,12 @@ test(
           assert.ok(memberIsPresent(listed, name), `${name} must be registered by MemberManager`);
         }
 
+        const holders = new Set();
+        let maxConcurrent = 0;
         const runOne = async () => {
           const lease = await dispatcher.dispatch({});
+          holders.add(lease.workerId);
+          maxConcurrent = Math.max(maxConcurrent, holders.size);
           try {
             const api = createPooledFleetApi(fleet.fleetApi, lease);
             const result = await api.executeCommand({ member_name: 'doer', command: 'echo live-ok' });
@@ -46,15 +50,21 @@ test(
             await new Promise((resolve) => setTimeout(resolve, 2_000));
             return { workerId: lease.workerId, doer: lease.doer.name };
           } finally {
+            holders.delete(lease.workerId);
             await lease.release();
           }
         };
 
         const results = await Promise.all(Array.from({ length: 6 }, runOne));
         const ids = results.map((r) => r.workerId);
-        assert.equal(ids.filter((id) => id.startsWith('pool-')).length >= 2, true);
-        assert.equal(ids.filter((id) => id.startsWith('ephemeral-')).length >= 2, true);
-        assert.equal(new Set(results.slice(0, 4).map((r) => r.doer)).size, 4, 'first four run on distinct pairs');
+        assert.ok(ids.filter((id) => id.startsWith('pool-')).length >= 2);
+        assert.ok(ids.filter((id) => id.startsWith('ephemeral-')).length >= 2);
+        assert.equal(results.length, 6);
+        assert.equal(
+          maxConcurrent,
+          4,
+          '2 pool + 2 ephemeral held concurrently; the extra two wait then reuse',
+        );
 
         const after = toolText(await fleet.fleetApi.listMembers({}));
         for (const { doer } of results.filter((r) => r.workerId.startsWith('ephemeral-'))) {

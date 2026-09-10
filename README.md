@@ -57,7 +57,7 @@ workflows/my-workflow/
   my-workflow.js    # body: receives engine context, does the work
 ```
 
-The body receives `context` with Fleet primitives — `command()`, `transform()`, `agent()` — and does the work:
+The body receives `context` with Fleet primitives — `command()`, `transform()`, `agent()` — and does the work. Address the leased pair as `'doer'` and `'reviewer'`; do not hardcode member names:
 
 ```js
 // workflows/my-workflow/my-workflow.js
@@ -67,35 +67,26 @@ export async function main(context) {
   const { command, agent, log } = context;
 
   log('running analysis');
-  const data = await command('python3 analyze.py', { member_name: 'MY-DOER' });
+  const data = await command('python3 analyze.py', { member_name: 'doer' });
 
-  const reply = await agent('Summarize this data', { member_name: 'MY-DOER' });
+  const reply = await agent('Summarize this data', { member_name: 'doer' });
   return { data, reply };
 }
 ```
 
-The launcher owns spawn and cleanup. Copy the pattern from `workflows/demo/main.mjs`:
+The launcher owns spawn and cleanup. Copy the pattern from `workflows/demo/main.mjs`: CLI runs go through `withStandaloneLease` (spawn Fleet, take one lease, run, release). MCP already holds a lease and injects `fleetApi` + `workspace`.
 
 ```js
 // workflows/my-workflow/main.mjs
-export async function runMyWorkflow({ fleetApi } = {}) {
+import { withStandaloneLease } from '../standalone.mjs';
+import { ensureApralabs } from '../demo/ensure-apralabs.mjs';
+
+export async function runMyWorkflow({ fleetApi, workspace, signal, reportPhase } = {}) {
   ensureApralabs();
-  let api = fleetApi;
-  let stop = null;
-  if (!api) {
-    const { spawnFleet } = await import('../../transport/stdio-fleet.mjs');
-    const fleet = await spawnFleet({
-      memberName: 'MY-DOER',
-      workFolder: path.join(repoRoot, 'workdir', 'MY-DOER'),
-    });
-    api = fleet.fleetApi;
-    stop = fleet.stop;
+  if (!fleetApi) {
+    return withStandaloneLease((ctx) => runMyWorkflow({ ...ctx, reportPhase }));
   }
-  try {
-    // …execute the body
-  } finally {
-    await stop?.();
-  }
+  // …execute the body with fleetApi, workspace, signal
 }
 ```
 
@@ -108,8 +99,8 @@ Append one entry to `mcp/registry.mjs`:
   name: 'my-workflow',
   description: 'What this does and when a model should choose it.',
   inputSchema: z.object({ target: z.string().describe('What to act on') }),
-  async run({ fleetApi, args, signal, reportPhase }) {
-    return await runMyWorkflow({ fleetApi, target: args.target, signal, reportPhase });
+  async run({ fleetApi, args, signal, reportPhase, workspace }) {
+    return await runMyWorkflow({ fleetApi, workspace, target: args.target, signal, reportPhase });
   },
 }
 ```

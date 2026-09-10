@@ -1,6 +1,11 @@
 #!/bin/sh
 set -eu
 
+# OBSOLETE. Node MemberManager (pool/member-manager.mjs) owns registration and
+# OAuth at process startup. DEMO-DOER / DEMO-REVIEWER are retired. This script
+# is not on the Docker or MCP startup path; kept only so older docs/scripts
+# that still mention it do not 404.
+#
 # Same commands as a host provision. Docker entrypoint runs this after `apra-fleet start`
 # so DEMO-DOER / DEMO-REVIEWER exist in the shared data dir. Kit launchers spawn
 # stdio Fleet, which sees that same data dir.
