@@ -15,7 +15,7 @@ async function makePool(size) {
 }
 
 // Same contract as EphemeralWorkerFactory, minus Fleet.
-function fakeEphemeral({ maxConcurrent = 1, failWith = null } = {}) {
+function fakeEphemeral({ maxConcurrent = 1, failWith = null, createDelayMs = 0 } = {}) {
   const listeners = new Set();
   let active = 0;
   let counter = 0;
@@ -25,6 +25,9 @@ function fakeEphemeral({ maxConcurrent = 1, failWith = null } = {}) {
     created: [],
     onRelease(listener) { listeners.add(listener); return () => listeners.delete(listener); },
     async create({ signal } = {}) {
+      if (createDelayMs) {
+        await new Promise((resolve) => setTimeout(resolve, createDelayMs));
+      }
       if (failWith) throw failWith;
       if (active >= maxConcurrent) return null;
       active += 1;
@@ -267,6 +270,35 @@ test('aborting while queued removes the waiter', async () => {
   assert.equal(next.workerId, 'pool-1');
   await next.release();
   await dispatcher.close();
+});
+
+test('aborting during a slow ephemeral create does not wait the queue timeout', async () => {
+  const ephemeral = fakeEphemeral({
+    failWith: new Error('registration exploded'),
+    createDelayMs: 80,
+  });
+  const dispatcher = makeDispatcher({
+    pool: await makePool(1),
+    ephemeral,
+    queueTimeoutMs: 1500,
+  });
+  const held = await dispatcher.dispatch();
+  try {
+    const controller = new AbortController();
+    const waiting = dispatcher.dispatch({ signal: controller.signal });
+    await tick(20);
+    controller.abort(new Error('caller went away'));
+    const started = Date.now();
+    await assert.rejects(() => waiting, /caller went away/);
+    const elapsed = Date.now() - started;
+    assert.ok(
+      elapsed < 800,
+      `dispatch sat for ${elapsed}ms after abort; must not wait queueTimeoutMs`,
+    );
+  } finally {
+    await held.release();
+    await dispatcher.close();
+  }
 });
 
 test('a queued caller receives heartbeats with position and capacity', async () => {

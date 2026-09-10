@@ -46,6 +46,10 @@ export class WorkerPool {
     if (this.#closed) throw new Error('WorkerPool is closed');
     signal?.throwIfAborted();
     const lease = await this.tryAcquireNow(signal);
+    if (signal?.aborted) {
+      if (lease) await lease.release();
+      signal.throwIfAborted();
+    }
     if (lease) return lease;
     return await this.#queue({ signal, reportPhase });
   }
@@ -129,6 +133,9 @@ export class WorkerPool {
   }
 
   #queue({ signal, reportPhase }) {
+    if (signal?.aborted) {
+      return Promise.reject(signal.reason ?? new Error('acquire aborted'));
+    }
     return new Promise((resolve, reject) => {
       const waiter = { signal, settled: false };
       this.#waiters.push(waiter);

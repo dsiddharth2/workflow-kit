@@ -53,6 +53,14 @@ export class WorkerDispatcher {
     // newcomer that #tryTiers here would steal a just-released worker.
     if (this.#waiters.length === 0) {
       const lease = await this.#tryTiers(signal);
+      if (signal?.aborted) {
+        if (lease) await lease.release();
+        signal.throwIfAborted();
+      }
+      if (this.#closed) {
+        if (lease) await lease.release();
+        throw new Error('WorkerDispatcher is closed');
+      }
       if (lease && this.#waiters.length === 0) return lease;
       if (lease) await lease.release();
     }
@@ -85,6 +93,9 @@ export class WorkerDispatcher {
   }
 
   #enqueue({ signal, reportPhase }) {
+    if (signal?.aborted) {
+      return Promise.reject(signal.reason ?? new Error('dispatch aborted'));
+    }
     return new Promise((resolve, reject) => {
       const waiter = { signal, settled: false };
       this.#waiters.push(waiter);
