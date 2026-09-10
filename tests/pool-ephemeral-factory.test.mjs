@@ -118,3 +118,27 @@ test('close tears down every active lease and refuses new ones', async () => {
   assert.equal(factory.active, 0);
   assert.equal(await factory.create(), null);
 });
+
+test('close waits for an in-flight create and does not return a live lease', async () => {
+  let releaseRegister;
+  const registerBlocked = new Promise((resolve) => {
+    releaseRegister = resolve;
+  });
+  const fleetApi = createMockFleetApi();
+  const originalRegister = fleetApi.registerMember.bind(fleetApi);
+  fleetApi.registerMember = async (options) => {
+    await registerBlocked;
+    return originalRegister(options);
+  };
+  const { factory, workRoot } = await makeFactory({ fleetApi, maxConcurrent: 1 });
+  const creating = factory.create();
+  await tick();
+  const closing = factory.close();
+  releaseRegister();
+  const lease = await creating;
+  assert.equal(lease, null, 'a create that finishes after close must not return a usable lease');
+  await closing;
+  assert.equal(factory.active, 0);
+  assert.equal(await factory.create(), null);
+  assert.deepEqual(await fs.readdir(workRoot), []);
+});

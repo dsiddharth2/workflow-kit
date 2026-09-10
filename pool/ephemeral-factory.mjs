@@ -7,6 +7,7 @@ export class EphemeralWorkerFactory {
   #manager;
   #config;
   #active = new Set();
+  #inflight = new Set();
   #releaseListeners = new Set();
   #closed = false;
 
@@ -40,6 +41,16 @@ export class EphemeralWorkerFactory {
     const entry = { release: null };
     this.#active.add(entry);
 
+    const pending = this.#finishCreate({ signal, shortId, prefix, workRoot, entry });
+    this.#inflight.add(pending);
+    try {
+      return await pending;
+    } finally {
+      this.#inflight.delete(pending);
+    }
+  }
+
+  async #finishCreate({ signal, shortId, prefix, workRoot, entry }) {
     let pair;
     try {
       pair = await this.#manager.provisionPair(prefix, workRoot);
@@ -76,6 +87,11 @@ export class EphemeralWorkerFactory {
     };
     entry.release = release;
 
+    if (this.#closed) {
+      await release();
+      return null;
+    }
+
     // Safety net: a task that never releases would leak a Fleet member and a
     // folder under tmpdir. Abort it cooperatively, then tear down regardless.
     ttl = setTimeout(() => {
@@ -95,6 +111,7 @@ export class EphemeralWorkerFactory {
 
   async close() {
     this.#closed = true;
+    await Promise.allSettled([...this.#inflight]);
     await Promise.all([...this.#active].map((entry) => entry.release?.()));
   }
 }
