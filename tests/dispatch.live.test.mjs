@@ -37,17 +37,45 @@ test(
         }
 
         const holders = new Set();
+        let grants = 0;
         let maxConcurrent = 0;
+        const grantBarrier = { target: 4, timeoutMs: 120_000 };
+
+        const waitForGrants = () =>
+          new Promise((resolve, reject) => {
+            if (grants >= grantBarrier.target) {
+              resolve();
+              return;
+            }
+            const deadline = Date.now() + grantBarrier.timeoutMs;
+            const check = () => {
+              if (grants >= grantBarrier.target) {
+                clearInterval(timer);
+                resolve();
+              } else if (Date.now() >= deadline) {
+                clearInterval(timer);
+                reject(
+                  new Error(
+                    `only ${grants} leases granted within ${grantBarrier.timeoutMs}ms; expected ${grantBarrier.target}`,
+                  ),
+                );
+              }
+            };
+            const timer = setInterval(check, 25);
+            check();
+          });
+
         const runOne = async () => {
           const lease = await dispatcher.dispatch({});
+          grants += 1;
           holders.add(lease.workerId);
           maxConcurrent = Math.max(maxConcurrent, holders.size);
+          // Hold until the first wave (2 pool + 2 ephemeral) has all been granted.
+          await waitForGrants();
           try {
             const api = createPooledFleetApi(fleet.fleetApi, lease);
             const result = await api.executeCommand({ member_name: 'doer', command: 'echo live-ok' });
             assert.match(toolText(result), /live-ok/);
-            // Hold the worker briefly so all six calls overlap.
-            await new Promise((resolve) => setTimeout(resolve, 2_000));
             return { workerId: lease.workerId, doer: lease.doer.name };
           } finally {
             holders.delete(lease.workerId);

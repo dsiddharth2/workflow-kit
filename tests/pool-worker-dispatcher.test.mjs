@@ -15,7 +15,12 @@ async function makePool(size) {
 }
 
 // Same contract as EphemeralWorkerFactory, minus Fleet.
-function fakeEphemeral({ maxConcurrent = 1, failWith = null, createDelayMs = 0 } = {}) {
+function fakeEphemeral({
+  maxConcurrent = 1,
+  failWith = null,
+  createDelayMs = 0,
+  tierWaitMs = 0,
+} = {}) {
   const listeners = new Set();
   let active = 0;
   let counter = 0;
@@ -29,7 +34,12 @@ function fakeEphemeral({ maxConcurrent = 1, failWith = null, createDelayMs = 0 }
         await new Promise((resolve) => setTimeout(resolve, createDelayMs));
       }
       if (failWith) throw failWith;
-      if (active >= maxConcurrent) return null;
+      if (active >= maxConcurrent) {
+        if (tierWaitMs) {
+          await new Promise((resolve) => setTimeout(resolve, tierWaitMs));
+        }
+        return null;
+      }
       active += 1;
       counter += 1;
       const id = `ephemeral-${String(counter).padStart(8, '0')}`;
@@ -323,6 +333,29 @@ test('ephemeral-only dispatch works with no pool', async () => {
   assert.match(lease.workerId, /^ephemeral-/);
   await lease.release();
   await dispatcher.close();
+});
+
+test('dispatch does not enqueue after beginShutdown during a tier wait', async () => {
+  const ephemeral = fakeEphemeral({ maxConcurrent: 1, tierWaitMs: 150 });
+  const dispatcher = makeDispatcher({
+    pool: await makePool(1),
+    ephemeral,
+    queueTimeoutMs: 2000,
+  });
+  const poolLease = await dispatcher.dispatch();
+  const ephLease = await dispatcher.dispatch();
+  const pending = dispatcher.dispatch();
+  await tick(20);
+  dispatcher.beginShutdown();
+  const started = Date.now();
+  await assert.rejects(() => pending, /closed/);
+  await assert.rejects(() => dispatcher.dispatch(), /closed/);
+  assert.ok(
+    Date.now() - started < 500,
+    'must reject before queueTimeoutMs after shutdown',
+  );
+  await poolLease.release();
+  await ephLease.release();
 });
 
 test('close rejects queued waiters and refuses new dispatches', async () => {

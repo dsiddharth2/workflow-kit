@@ -70,6 +70,7 @@ export class WorkerDispatcher {
         `all ${this.capacity} workers busy and the queue is full (${this.#config.maxQueueSize}); retry later`,
       );
     }
+    if (this.#closed) throw new Error('WorkerDispatcher is closed');
     return this.#enqueue({ signal, reportPhase });
   }
 
@@ -93,6 +94,9 @@ export class WorkerDispatcher {
   }
 
   #enqueue({ signal, reportPhase }) {
+    if (this.#closed) {
+      return Promise.reject(new Error('WorkerDispatcher is closed'));
+    }
     if (signal?.aborted) {
       return Promise.reject(signal.reason ?? new Error('dispatch aborted'));
     }
