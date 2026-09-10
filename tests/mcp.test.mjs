@@ -131,6 +131,85 @@ test('startMcpServer removes its startup error listener after listening', async 
   }
 });
 
+test('shutdown rejects queued dispatches before waiting for HTTP to drain', async () => {
+  let releaseHold;
+  const held = new Promise((resolve) => {
+    releaseHold = resolve;
+  });
+  let resolveStarted;
+  const started = new Promise((resolve) => {
+    resolveStarted = resolve;
+  });
+  const registry = [
+    {
+      name: 'hold',
+      description: 'holds the only worker',
+      async run() {
+        resolveStarted();
+        await held;
+        return 'held';
+      },
+    },
+    {
+      name: 'next',
+      description: 'queues behind hold',
+      async run() {
+        return 'next';
+      },
+    },
+  ];
+  const fleetApi = createMockFleetApi();
+  const dispatcher = new WorkerDispatcher({
+    pool: WorkerPool.create({
+      config: { size: 1, root: await fs.mkdtemp(path.join(os.tmpdir(), 'mcp-shutdown-')), acquireTimeoutMs: 5000 },
+    }),
+    ephemeral: null,
+    config: { maxQueueSize: 4, queueTimeoutMs: 5000 },
+  });
+  const { server, close } = await startMcpServer({ fleetApi, dispatcher, port: 0, registry });
+  const url = new URL(`http://127.0.0.1:${server.address().port}/mcp`);
+  const clientA = new Client({ name: 'shutdown-a', version: '1.0.0' });
+  const clientB = new Client({ name: 'shutdown-b', version: '1.0.0' });
+  let holdCall;
+  let nextCall;
+  let shuttingDown;
+  try {
+    await clientA.connect(new StreamableHTTPClientTransport(url));
+    await clientB.connect(new StreamableHTTPClientTransport(new URL(url)));
+    holdCall = clientA.callTool({ name: 'hold' });
+    await within(started, 1_000, 'timed out waiting for hold to start');
+    nextCall = clientB.callTool({ name: 'next' });
+    await within(
+      (async () => {
+        while (dispatcher.queued < 1) await new Promise((resolve) => setTimeout(resolve, 10));
+      })(),
+      1_000,
+      'timed out waiting for next to queue',
+    );
+
+    shuttingDown = close();
+    const nextResult = await within(
+      nextCall,
+      800,
+      'queued dispatch should reject promptly when shutdown begins',
+    );
+    assert.equal(nextResult.isError, true);
+    assert.match(nextResult.content[0].text, /shutting down/);
+    releaseHold();
+    await holdCall;
+    try { await clientA.close(); } catch { /* already closed */ }
+    try { await clientB.close(); } catch { /* already closed */ }
+    await shuttingDown;
+  } finally {
+    releaseHold?.();
+    await Promise.allSettled([holdCall, nextCall, shuttingDown].filter(Boolean));
+    try { await clientA.close(); } catch { /* server may already be down */ }
+    try { await clientB.close(); } catch { /* server may already be down */ }
+    try { await close(); } catch { /* idempotent best-effort */ }
+    await dispatcher.close();
+  }
+});
+
 test('advertises exactly the registry tools, with schemas and annotations', async () => {
   await withServer(undefined, async ({ client }) => {
     const { tools } = await client.listTools();

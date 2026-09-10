@@ -5,7 +5,7 @@ import { ensureApralabs } from '../workflows/demo/ensure-apralabs.mjs';
 import { createMcpHttpApp } from './http.mjs';
 import { buildMcpServer } from './server.mjs';
 
-export async function startMcpServer({ fleetApi, dispatcher, port, env = process.env } = {}) {
+export async function startMcpServer({ fleetApi, dispatcher, port, env = process.env, registry } = {}) {
   ensureApralabs();
 
   let api = fleetApi;
@@ -37,7 +37,7 @@ export async function startMcpServer({ fleetApi, dispatcher, port, env = process
   }
 
   const app = createMcpHttpApp({
-    buildServer: () => buildMcpServer({ fleetApi: api, dispatcher: activeDispatcher }),
+    buildServer: () => buildMcpServer({ fleetApi: api, dispatcher: activeDispatcher, registry }),
   });
   const listenPort = port ?? Number(env.PORT ?? 3000);
   const bindHost = env.MCP_BIND_HOST || '127.0.0.1';
@@ -81,7 +81,12 @@ export async function startMcpServer({ fleetApi, dispatcher, port, env = process
       `(worker capacity ${activeDispatcher.capacity})`,
   );
 
+  let closed = false;
   const close = async () => {
+    if (closed) return;
+    closed = true;
+    // Fail queued waiters first so HTTP drain is not stuck behind queueTimeoutMs.
+    activeDispatcher.beginShutdown();
     await new Promise((resolve) => server.close(resolve));
     await ownDispatcher?.close();
     await stopFleet?.();

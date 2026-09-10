@@ -172,12 +172,19 @@ export class WorkerDispatcher {
     }
   }
 
-  async close() {
+  // Stops accepting new work and fails queued waiters without tearing down
+  // leases that in-flight HTTP requests still hold. close() calls this, then
+  // HTTP drain, then teardown.
+  beginShutdown() {
     this.#closed = true;
-    for (const unsubscribe of this.#unsubscribe) unsubscribe();
+    for (const unsubscribe of this.#unsubscribe.splice(0)) unsubscribe();
     for (const waiter of [...this.#waiters]) {
       waiter.fail?.(new Error('dispatcher is shutting down'));
     }
+  }
+
+  async close() {
+    this.beginShutdown();
     await this.#ephemeral?.close();
     await this.#pool?.close();
   }
