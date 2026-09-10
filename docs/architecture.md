@@ -44,22 +44,23 @@ text extraction is a shared helper rather than inline property access.
 
 **Member.** A named agent workspace registered with Fleet: a name, a type (`local` or
 `remote`), an LLM (`claude`), and a working folder on disk. Fleet runs commands and
-prompts *as* a member, inside that member's folder. The demo launcher registers
-`DEMO-DOER` at spawn time. `DEMO-REVIEWER` exists as a work folder for inspect-members
-and Docker provisioning; the demo workflow itself no longer registers it.
+prompts *as* a member, inside that member's folder. Workflows address members as
+`'doer'` and `'reviewer'`. Node's `MemberManager` registers real names at startup:
+pool pairs `WORKER-{i}-DOER` / `-REVIEWER`, plus ephemeral `EPHEMERAL-{id}-*` pairs
+created when the pool is busy.
 
 **Work folder.** The directory a member operates in. Each member needs its **own**
-folder — two local members sharing a `cwd` collide. Hence `workdir/DEMO-DOER/`
-and `workdir/DEMO-REVIEWER/`, each holding only a `.gitkeep`. Fleet may drop a
-`.claude/settings.local.json` into them at registration time; that is local machine
-state and is gitignored.
+folder — two local members sharing a `cwd` collide. Pool folders live under the
+configured pool root; ephemeral folders live under `os.tmpdir()` and are deleted on
+release. Fleet may drop a `.claude/settings.local.json` into them at registration
+time; that is local machine state and is gitignored.
 
 **Credential store.** Where OAuth tokens live, attached to a specific member. The
 spawned child inherits `CLAUDE_CODE_OAUTH_TOKEN` from the parent environment, and
-`spawnFleet()` then calls Fleet's `provision_llm_auth` tool for that member. Exporting
-the token in your shell is how a live `agent()` call is authenticated — the Claude
-process is spawned by Fleet, not by your Node process. Nearly every "works
-interactively, fails unattended" problem traces back to a missing token.
+`MemberManager` calls Fleet's `provision_llm_auth` tool for each registered member.
+Exporting the token in your shell is how a live `agent()` call is authenticated —
+the Claude process is spawned by Fleet, not by your Node process. Nearly every
+"works interactively, fails unattended" problem traces back to a missing token.
 
 ## The layers
 
@@ -82,9 +83,9 @@ interactively, fails unattended" problem traces back to a missing token.
 ┌─────────────────────────────────────────────────────────────┐
 │  apra-fleet child     `run --transport stdio`               │
 │                                                             │
-│   DEMO-DOER              DEMO-REVIEWER (inspect / Docker)   │
-│   workdir/DEMO-DOER/     workdir/DEMO-REVIEWER/             │
-│   Claude Code + OAuth           registered if provisioned   │
+│   pool WORKER-i + ephemeral EPHEMERAL-id pairs              │
+│   doer + reviewer folders       registered by MemberManager │
+│   Claude Code + OAuth                                       │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -98,7 +99,7 @@ client. The workflow layer stands alone; MCP is a stateless front door over it.
 
 | File | Responsibility |
 |---|---|
-| `stdio-fleet.mjs` | Spawns Fleet over stdio, connects an MCP client, registers the member, attaches OAuth, and returns `{ fleetApi, stop() }`. |
+| `stdio-fleet.mjs` | Spawns Fleet over stdio, connects an MCP client, and returns `{ fleetApi, stop() }`. Member registration and OAuth are `MemberManager`'s job. |
 
 `createFleetApi(client)` is the seam: it calls `client.listTools()`, verifies the five
 required Fleet tools, and maps `executeCommand` / `executePrompt` / `listMembers` /
@@ -124,14 +125,14 @@ it is what makes the body testable and the launcher reusable.
 `demo.js` runs four phases, each demonstrating a primitive you would reuse:
 
 1. **status** — `fleetStatus()`, logging whatever the spawned Fleet reports.
-2. **command** — `python3 dummy.py` on `DEMO-DOER`. Costs no LLM tokens.
+2. **command** — `python3 dummy.py` on `'doer'`. Costs no LLM tokens.
 3. **transform** — a pure local JS step, no Fleet involvement at all.
 4. **agent** — `Reply with exactly: pong` on the doer. This is the step that spends
    tokens and needs `CLAUDE_CODE_OAUTH_TOKEN` to reach the child.
 
-Member registration is owned by `spawnFleet()`, not by the workflow body. The demo
-launcher passes `memberName: 'DEMO-DOER'` and the matching work folder; the child
-registers that member and, when a token is present, calls `provision_llm_auth`.
+Member registration is owned by `MemberManager` at dispatcher startup, not by the
+workflow body. The leased pair's names are resolved from `'doer'` / `'reviewer'`
+by `createPooledFleetApi`. When a token is present, OAuth is attached per member.
 
 `command()` passes `failSoft: true`, so a machine without `python3` still completes the
 run. A throwing `transform()` or `agent()` does fail the run, and the process exits 1.
@@ -156,15 +157,14 @@ Full interface reference lives in [mcp-interface.md](mcp-interface.md).
 ```text
 runDemo()
   ├─ ensureApralabs()                       symlink @apralabs packages
-  ├─ spawnFleet({ memberName, workFolder }) → { fleetApi, stop }   (skipped if injected)
-  │    ├─ StdioClientTransport: apra-fleet run --transport stdio
-  │    ├─ createFleetApi(client)            listTools + method map
-  │    ├─ registerMember(DEMO-DOER)
-  │    └─ provision_llm_auth (when token present)
+  ├─ withStandaloneLease() when no fleetApi  (CLI: spawn + dispatcher + lease)
+  │    ├─ spawnFleet()                      → { fleetApi, stop }
+  │    ├─ createWorkerDispatcher()          MemberManager provisions pool
+  │    └─ dispatch() → PooledFleetApi + workspace
   ├─ new WorkflowEngine(new FleetWorkflow(api))
-  ├─ engine.executeFile('demo.js', { fleetApi })
+  ├─ engine.executeFile('demo.js', { fleetApi, workspace })
   │    status → command → transform → agent
-  └─ finally: await stop?.()
+  └─ finally: release lease / close dispatcher / stop Fleet
 ```
 
 The `finally` matters. Without stopping the transport the child process keeps the event
@@ -200,14 +200,15 @@ methods onto those names. A missing required tool fails at spawn, not on first c
 tool payload and pass them as MCP client options. The client timeout defaults to 15
 minutes (same as `@apralabs/apra-fleet-client`), not the SDK's 60s.
 
-**Registration happens at spawn time.** A freshly spawned Fleet process starts empty, so
-`spawnFleet({ memberName, workFolder })` registers the member before any workflow phase
-runs. `demo.js` does not call `registerMember`. Injected test clients therefore do not
+**Registration happens in Node at dispatcher startup.** A freshly spawned Fleet process
+starts empty. `createWorkerDispatcher()` uses `MemberManager` to register the pool
+roster (and ephemeral pairs later). `spawnFleet()` does not register DEMO members.
+`demo.js` does not call `registerMember`. Injected test clients therefore do not
 need a `registerMember` method.
 
 **OAuth is inherited, then attached.** The child environment copies the parent and sets
 `CLAUDE_CODE_OAUTH_TOKEN` when a token is available (`oauthToken` argument or the parent
-env). After registration, `provision_llm_auth` copies that session onto the member.
+env). After registration, `MemberManager` calls `provision_llm_auth` for each member.
 A missing token does not block spawn; `agent()` will fail later if Fleet has nothing to
 authenticate with. `provision_llm_auth` failures are warnings, not hard errors.
 
@@ -248,7 +249,7 @@ transport. It is safe to call twice. Unexpected child exit rejects the in-flight
 |---|---|---|
 | Member registry | Fleet data dir (`~/.apra-fleet/data` by default) | Shared across stdio children on the same machine; a new child sees members already registered there. |
 | OAuth tokens | Fleet credential store, per member | Until the token expires. Also passed into the child via `CLAUDE_CODE_OAUTH_TOKEN`. |
-| Member scratch space | `workdir/<MEMBER>/` | On disk; `.claude/` inside is gitignored local state. |
+| Member scratch space | pool root / ephemeral tmpdir | On disk; `.claude/` inside is gitignored local state. |
 
 The MCP layer holds no state: every HTTP request gets a fresh MCP server and transport.
 The downstream Fleet child lives for the MCP server process, not per HTTP request.
@@ -258,6 +259,9 @@ The downstream Fleet child lives for the MCP server process, not per HTTP reques
 | Variable | Default | Purpose |
 |---|---|---|
 | `CLAUDE_CODE_OAUTH_TOKEN` | (none) | OAuth token passed into spawned Fleet processes and used by `provision_llm_auth`. |
+| `WORKER_POOL_SIZE` | `4` | Pre-registered doer/reviewer pairs. |
+| `WORKER_EPHEMERAL_MAX` | `10` | Extra pairs created under `os.tmpdir()` when the pool is busy. |
+| `WORKER_DISPATCH_QUEUE_SIZE` | `20` | Calls waiting when both tiers are busy. |
 | `APRA_FLEET_BIN` | `apra-fleet` on PATH | Path to the Fleet binary when it is not on PATH. |
 | `PORT` | `3000` | MCP server listen port. |
 | `MCP_BIND_HOST` | `127.0.0.1` | MCP server bind address. Compose sets `0.0.0.0`. |
@@ -268,8 +272,8 @@ The downstream Fleet child lives for the MCP server process, not per HTTP reques
 |---|---|
 | Real Python work | Replace `dummy.py`, keep the `command()` call |
 | Real LLM work | Change the `agent()` prompt, keep `member_name` |
-| A second agent | Dispatch `agent({ member_name: 'DEMO-REVIEWER' })`; register and auth it at spawn (or via `provision-members.sh` against the shared data dir) |
-| Your own member names | Pass them to `spawnFleet()`, create matching `workdir/` folders, and update `scripts/provision-members.sh` |
+| A second agent | Address `'reviewer'` on the leased pair; the dispatcher already registered both members |
+| Your own pool size | Set `WORKER_POOL_SIZE` / `WORKER_EPHEMERAL_MAX`; Node registers names from `pool/roster.mjs` |
 | A new MCP tool | Append its entry to `mcp/registry.mjs` — no server or HTTP changes |
 | Real authentication | Pass middleware to `createMcpHttpApp({ authenticate })` |
 

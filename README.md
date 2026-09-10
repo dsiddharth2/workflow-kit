@@ -37,8 +37,8 @@ Claude can now call your workflows as MCP tools.
 The Docker image handles everything on startup:
 
 1. Installs Fleet, Claude Code, and project dependencies
-2. Starts an HTTP Fleet server long enough to provision members and attach your OAuth token
-3. Starts the MCP server on port 3000, which spawns its own Fleet child over stdio
+2. Starts the MCP server on port 3000, which spawns Fleet over stdio
+3. Node registers the worker pool and attaches your OAuth token at startup
 
 You only write two things:
 
@@ -116,18 +116,25 @@ Append one entry to `mcp/registry.mjs`:
 
 No changes to `server.mjs` or `http.mjs` needed — the registry is data.
 
-### 3. Register your members
+### Workers
 
-Pass `memberName` and `workFolder` to `spawnFleet()` in the launcher so they are
-registered when Fleet starts. Also add them to `scripts/provision-members.sh` if you
-use Docker (the entrypoint provisions into Fleet's shared data dir):
+Every MCP tool call and CLI run holds one **doer + reviewer** pair for its
+duration. Workflows address them as `'doer'` and `'reviewer'`; the kit resolves
+those to the members of the pair the call was given.
 
-```bash
-apra-fleet register-member --type local --llm claude \
-  --name MY-DOER --path "$(pwd)/workdir/MY-DOER"
-```
+Pairs come from two tiers, tried in order:
 
-Create matching folders under `workdir/`. Each member needs its own folder — two members sharing a `cwd` will collide.
+| Tier | Members | Configured by | Default |
+|---|---|---|---|
+| Pool | `WORKER-{i}-DOER` / `-REVIEWER`, pre-registered at startup | `WORKER_POOL_SIZE` | 4 |
+| Ephemeral | `EPHEMERAL-{id}-DOER` / `-REVIEWER`, created under `os.tmpdir()` and removed on release | `WORKER_EPHEMERAL_MAX` | 10 |
+
+When both are busy, calls queue (`WORKER_DISPATCH_QUEUE_SIZE`, default 20) and
+then fail with "all workers busy". Set `WORKER_POOL_SIZE=0` for an ephemeral-only
+deployment (Function Apps) or `WORKER_EPHEMERAL_MAX=0` for pool-only.
+
+Node registers members and provisions OAuth at startup from
+`CLAUDE_CODE_OAUTH_TOKEN`; there is no provisioning script to run.
 
 ### 4. Run it
 
@@ -183,12 +190,14 @@ docker compose run --rm fleet node --test tests/demo.test.mjs         # in Docke
 
 The mock tests inject a fake `fleetApi` and assert real behavior — command dispatch, transform, agent calls. Write mock tests first when adding workflows.
 
-Live tests need the `apra-fleet` binary (they spawn it over stdio). `demo.live` also needs a token:
+Live tests need the `apra-fleet` binary (they spawn it over stdio). `demo.live` and
+`dispatch.live` also need a token:
 
 ```bash
 node --test tests/stdio-fleet.live.test.mjs  # spawn + fleetStatus; skips if no binary
 node --test tests/demo.live.test.mjs         # full workflow with real LLM
 node --test tests/mcp.live.test.mjs          # MCP server against live stdio Fleet
+node --test tests/dispatch.live.test.mjs     # pool → ephemeral → queue against a real Fleet
 ```
 
 ---
@@ -213,9 +222,8 @@ node --test tests/mcp.live.test.mjs          # MCP server against live stdio Fle
 ┌─────────────────────────────────────────────────────────────┐
 │  apra-fleet child     `run --transport stdio`               │
 │                                                             │
-│   YOUR-DOER                     YOUR-REVIEWER               │
-│   workdir/YOUR-DOER/            workdir/YOUR-REVIEWER/      │
-│   Claude Code + OAuth           registered, ready            │
+│   leased doer + reviewer pair (pool or ephemeral)           │
+│   Claude Code + OAuth           registered by Node           │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -224,7 +232,7 @@ Four ideas explain most of the code:
 - **Launcher / body split.** `main.mjs` owns spawn, transport and cleanup; the `.js` body only does the work. That is what keeps bodies testable.
 - **`fleetApi` is injected.** Launchers spawn only when no client is passed in, so mock tests run with no binary and no tokens.
 - **Fleet is a machine install, not a dependency.** `ensureApralabs()` symlinks `node_modules/@apralabs` to the Fleet install. No `@apralabs/*` in `package.json`.
-- **Downstream Fleet is stdio.** Launchers call `spawnFleet()`. `APRA_FLEET_TRANSPORT` is not used. Members are registered at spawn time, not in the workflow body.
+- **Downstream Fleet is stdio.** Launchers call `spawnFleet()`. `APRA_FLEET_TRANSPORT` is not used. Members are registered by Node (`MemberManager`) at startup, not in the workflow body.
 
 ---
 
@@ -237,11 +245,11 @@ Node process), so the token must reach that child.
 ### Local development
 
 ```bash
-apra-fleet auth --oauth --member DEMO-DOER "$(claude setup-token)"
+export CLAUDE_CODE_OAUTH_TOKEN="$(claude setup-token)"
 ```
 
-`claude setup-token` opens a browser login and outputs the token. Export it (or pass
-it to `spawnFleet({ oauthToken })`) so the stdio child can attach it to the member.
+`claude setup-token` opens a browser login and outputs the token. Export it so Node
+can attach it to each worker pair at startup via `provision_llm_auth`.
 
 ### Docker / VM
 
@@ -256,9 +264,8 @@ $env:CLAUDE_CODE_OAUTH_TOKEN = "your-token"
 docker compose up -d
 ```
 
-The provision script picks up the env var and runs `apra-fleet auth` inside the
-container (against the entrypoint's HTTP Fleet) so the shared data dir has the token.
-The MCP process also inherits the env var when it spawns stdio Fleet. The `-d` flag
+Compose passes the env var into the container. Node attaches it to pool members at
+startup; the MCP process also inherits it when it spawns stdio Fleet. The `-d` flag
 runs the container in the background.
 
 ### CI (GitHub Actions, Azure Pipelines, etc.)
@@ -277,6 +284,9 @@ in Fleet's in-memory credential store.
 | Variable | Default | Purpose |
 |---|---|---|
 | `CLAUDE_CODE_OAUTH_TOKEN` | — | OAuth token inherited by spawned Fleet processes |
+| `WORKER_POOL_SIZE` | `4` | Pre-registered doer/reviewer pairs |
+| `WORKER_EPHEMERAL_MAX` | `10` | Extra pairs created under `os.tmpdir()` when the pool is busy |
+| `WORKER_DISPATCH_QUEUE_SIZE` | `20` | Calls waiting when both tiers are busy |
 | `APRA_FLEET_BIN` | `apra-fleet` on PATH | Fleet binary when it is not on PATH |
 | `MCP_PORT` | `3000` | Host port mapped to the MCP server |
 | `MCP_BIND_HOST` | `0.0.0.0` (compose) / `127.0.0.1` (local) | MCP server bind address |
@@ -310,10 +320,10 @@ mcp/
   auth.mjs              # injectable auth stub (replace for production)
   fleet-text.mjs        # extract text from Fleet MCP results
 scripts/
-  docker-entrypoint.sh  # start HTTP Fleet, install deps, provision, exec
-  provision-members.sh  # register members + attach OAuth (Docker / shared data dir)
+  docker-entrypoint.sh  # install deps, link packages, exec
 tests/                  # mock and live test suites
-workdir/                # member working directories (one per member)
+pool/                   # worker pool, ephemeral factory, dispatcher
+workdir/                # leftover member folders (pool uses its own root)
 docs/
   architecture.md       # layers, data flow, design decisions
   development.md        # setup, testing, adding workflows, conventions

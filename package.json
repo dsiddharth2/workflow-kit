@@ -6,7 +6,7 @@
     "node": ">=22.16"
   },
   "scripts": {
-    "test": "node --test tests/transport-stdio-fleet.test.mjs tests/demo.test.mjs tests/inspect-members.test.mjs tests/mcp.test.mjs",
+    "test": "node --test tests/transport-stdio-fleet.test.mjs tests/pool-roster.test.mjs tests/pool-cleanup.test.mjs tests/pool-worker-lock.test.mjs tests/pool-fleet-text.test.mjs tests/pool-pooled-fleet-api.test.mjs tests/pool-worker-pool.test.mjs tests/pool-config.test.mjs tests/pool-member-manager.test.mjs tests/pool-ephemeral-factory.test.mjs tests/pool-worker-dispatcher.test.mjs tests/pool-index.test.mjs tests/demo.test.mjs tests/inspect-members.test.mjs tests/mcp.test.mjs",
     "mcp": "node mcp/main.mjs"
   },
   "dependencies": {
