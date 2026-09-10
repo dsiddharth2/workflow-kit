@@ -49,8 +49,13 @@ export class WorkerDispatcher {
     if (this.#closed) throw new Error('WorkerDispatcher is closed');
     signal?.throwIfAborted();
 
-    const lease = await this.#tryTiers(signal);
-    if (lease) return lease;
+    // Waiters already in line are the only consumers of freed capacity. A
+    // newcomer that #tryTiers here would steal a just-released worker.
+    if (this.#waiters.length === 0) {
+      const lease = await this.#tryTiers(signal);
+      if (lease && this.#waiters.length === 0) return lease;
+      if (lease) await lease.release();
+    }
 
     if (this.#waiters.length >= this.#config.maxQueueSize) {
       throw new DispatchOverflowError(

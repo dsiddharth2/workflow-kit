@@ -55,6 +55,52 @@ function makeDispatcher({ pool = null, ephemeral = null, maxQueueSize = 10, queu
   return new WorkerDispatcher({ pool, ephemeral, config: { maxQueueSize, queueTimeoutMs } });
 }
 
+// Controllable stand-in so a release can stall inside tryAcquireNow while a
+// newcomer dispatch runs. Real WorkerPool tryClaim is too fast to lock this race.
+function gatedPool() {
+  const listeners = new Set();
+  let held = 0;
+  let stallNext = false;
+  let resolveStall = null;
+  return {
+    size: 1,
+    armStall() {
+      stallNext = true;
+    },
+    releaseStall() {
+      resolveStall?.();
+    },
+    onRelease(listener) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    async tryAcquireNow() {
+      if (stallNext) {
+        stallNext = false;
+        await new Promise((resolve) => {
+          resolveStall = resolve;
+        });
+      }
+      if (held >= 1) return null;
+      held += 1;
+      let released = false;
+      return {
+        workerId: 'pool-1',
+        doer: { name: 'POOL-1-DOER', folder: '/tmp/pool-1/doer' },
+        reviewer: { name: 'POOL-1-REVIEWER', folder: '/tmp/pool-1/reviewer' },
+        signal: new AbortController().signal,
+        release: async () => {
+          if (released) return;
+          released = true;
+          held -= 1;
+          for (const listener of listeners) listener();
+        },
+      };
+    },
+    async close() {},
+  };
+}
+
 test('constructor refuses a dispatcher with no tiers', () => {
   assert.throws(() => makeDispatcher(), /no workers configured/);
 });
@@ -135,6 +181,47 @@ test('queued callers are served in FIFO order', async () => {
   await leaseB.release();
   assert.deepEqual(order, ['a', 'b']);
   await dispatcher.close();
+});
+
+test('a new dispatch does not barge past queued waiters', async () => {
+  const pool = gatedPool();
+  const dispatcher = makeDispatcher({ pool, queueTimeoutMs: 1000 });
+  const held = await dispatcher.dispatch();
+  let aLease = null;
+  let bLease = null;
+  const a = dispatcher.dispatch().then((lease) => {
+    aLease = lease;
+    return lease;
+  });
+  try {
+    await tick();
+    assert.equal(dispatcher.queued, 1);
+
+    // Stall the waiter's tryTiers so the newcomer would steal the freed slot
+    // if dispatch() still tries tiers while the queue is non-empty.
+    pool.armStall();
+    await held.release();
+    await tick();
+
+    const b = dispatcher.dispatch().then((lease) => {
+      bLease = lease;
+      return lease;
+    });
+    await tick();
+    assert.equal(bLease, null, 'newcomer must not steal the freed worker while a waiter is queued');
+    assert.equal(aLease, null, 'queued waiter is still blocked on the stalled acquire');
+    assert.equal(dispatcher.queued, 2);
+
+    pool.releaseStall();
+    const leaseA = await a;
+    assert.equal(leaseA.workerId, 'pool-1');
+    await leaseA.release();
+    const leaseB = await b;
+    await leaseB.release();
+  } finally {
+    pool.releaseStall();
+    await dispatcher.close();
+  }
 });
 
 test('a full queue rejects with DispatchOverflowError', async () => {
