@@ -58,8 +58,22 @@ test('provisionPair rolls back the doer when the reviewer fails to register', as
     async () => manager.provisionPair('EPHEMERAL-BAD00000', path.join(await tmp(), 'pair')),
     /register_member failed for EPHEMERAL-BAD00000-REVIEWER/,
   );
-  assert.deepEqual(fleetApi.removeCalls.map((call) => call.member_name), ['EPHEMERAL-BAD00000-DOER']);
+  assert.deepEqual(
+    fleetApi.removeCalls.map((call) => call.member_name),
+    ['EPHEMERAL-BAD00000-DOER', 'EPHEMERAL-BAD00000-REVIEWER'],
+  );
   assert.equal(fleetApi.authCalls.length, 0, 'no auth for a half-provisioned pair');
+});
+
+test('provisionPair removes the workRoot when reviewer registration fails', async () => {
+  const fleetApi = createMockFleetApi({ registerFails: ['EPHEMERAL-BAD00000-REVIEWER'] });
+  const manager = new MemberManager(fleetApi, { oauthToken: 'tok' });
+  const workRoot = path.join(await tmp(), 'pair');
+  await assert.rejects(
+    () => manager.provisionPair('EPHEMERAL-BAD00000', workRoot),
+    /register_member failed for EPHEMERAL-BAD00000-REVIEWER/,
+  );
+  await assert.rejects(() => fs.access(workRoot), /ENOENT/);
 });
 
 test('provisionPair without a token registers but never calls provisionLlmAuth', async () => {

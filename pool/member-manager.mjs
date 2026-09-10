@@ -19,18 +19,18 @@ export class MemberManager {
     const doer = { name: `${prefix}-DOER`, folder: path.join(workRoot, 'doer') };
     const reviewer = { name: `${prefix}-REVIEWER`, folder: path.join(workRoot, 'reviewer') };
 
-    await this.#ensureRegistered(doer);
     try {
+      await this.#ensureRegistered(doer);
       await this.#ensureRegistered(reviewer);
+      await this.#provisionAuth(doer.name);
+      await this.#provisionAuth(reviewer.name);
+      return { doer, reviewer };
     } catch (err) {
-      // Never leave half a pair behind: a run holding only a doer cannot work.
-      await this.#tryRemove(doer.name);
+      // Unregister anyone who made it onto the Fleet, and drop half-created
+      // folders so a failed provision cannot fill tmpdir.
+      await this.teardownPair(prefix, workRoot);
       throw err;
     }
-
-    await this.#provisionAuth(doer.name);
-    await this.#provisionAuth(reviewer.name);
-    return { doer, reviewer };
   }
 
   async teardownPair(prefix, workRoot) {

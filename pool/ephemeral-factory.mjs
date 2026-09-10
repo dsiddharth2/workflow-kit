@@ -56,6 +56,11 @@ export class EphemeralWorkerFactory {
       pair = await this.#manager.provisionPair(prefix, workRoot);
     } catch (err) {
       this.#active.delete(entry);
+      try {
+        await this.#manager.teardownPair(prefix, workRoot);
+      } catch (teardownErr) {
+        console.warn(`[ephemeral] teardown after failed create for ${prefix}: ${teardownErr?.message ?? teardownErr}`);
+      }
       throw err;
     }
 

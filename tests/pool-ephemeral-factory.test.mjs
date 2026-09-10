@@ -85,6 +85,26 @@ test('a provisioning failure frees the slot and propagates', async () => {
   await factory.close();
 });
 
+test('a failed provisionPair does not leave the workRoot on disk', async () => {
+  const workRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'ephemeral-leak-'));
+  const memberManager = {
+    async provisionPair(_prefix, root) {
+      await fs.mkdir(path.join(root, 'doer'), { recursive: true });
+      throw new Error('registration exploded');
+    },
+    async teardownPair(_prefix, root) {
+      await fs.rm(root, { recursive: true, force: true });
+    },
+  };
+  const factory = new EphemeralWorkerFactory({
+    memberManager,
+    config: { maxConcurrent: 1, workRoot, ttlMs: 60_000 },
+  });
+  await assert.rejects(() => factory.create(), /registration exploded/);
+  assert.deepEqual(await fs.readdir(workRoot), []);
+  await factory.close();
+});
+
 test('the lease signal follows the caller signal', async () => {
   const { factory } = await makeFactory();
   const controller = new AbortController();
