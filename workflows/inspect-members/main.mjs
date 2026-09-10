@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { withStandaloneLease } from '../standalone.mjs';
 // Shared with the demo workflow on purpose: duplicating the symlink
 // logic would mean two places to fix when the Fleet install layout changes.
 import { ensureApralabs } from '../demo/ensure-apralabs.mjs';
@@ -11,43 +12,40 @@ export const selfExecuting = true;
 
 export async function runInspectMembers({
   fleetApi,
-  members,
+  workspace,
+  roles,
   includeFiles,
   signal,
   reportPhase,
 } = {}) {
   ensureApralabs();
+  if (!fleetApi) {
+    return withStandaloneLease((ctx) =>
+      runInspectMembers({ ...ctx, roles, includeFiles, reportPhase }),
+    );
+  }
+  if (!workspace?.doer || !workspace?.reviewer) {
+    throw new Error('runInspectMembers requires a workspace with doer and reviewer');
+  }
   const { FleetWorkflow } = await import('@apralabs/apra-fleet-workflow');
   const { WorkflowEngine } = await import('@apralabs/apra-fleet-workflow/engine');
 
-  let api = fleetApi;
-  let stop = null;
-  if (!api) {
-    const { spawnFleet } = await import('../../transport/stdio-fleet.mjs');
-    const fleet = await spawnFleet({});
-    api = fleet.fleetApi;
-    stop = fleet.stop;
-  }
-
-  try {
-    const workflowApi = {
-      executeCommand(options) {
-        Object.defineProperty(options, 'failSoft', { value: true, enumerable: false });
-        return api.executeCommand(options);
-      },
-    };
-    const workflow = new FleetWorkflow(workflowApi);
-    const engine = new WorkflowEngine(workflow);
-    return await engine.executeFile(engineScript, {
-      fleetApi: api,
-      members,
-      includeFiles,
-      signal,
-      reportPhase,
-    });
-  } finally {
-    await stop?.();
-  }
+  const workflowApi = {
+    executeCommand(options) {
+      Object.defineProperty(options, 'failSoft', { value: true, enumerable: false });
+      return fleetApi.executeCommand(options);
+    },
+  };
+  const workflow = new FleetWorkflow(workflowApi);
+  const engine = new WorkflowEngine(workflow);
+  return await engine.executeFile(engineScript, {
+    fleetApi,
+    workspace,
+    roles,
+    includeFiles,
+    signal,
+    reportPhase,
+  });
 }
 
 function isMainModule() {

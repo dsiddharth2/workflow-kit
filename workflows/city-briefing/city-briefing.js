@@ -44,7 +44,7 @@ export async function main(context) {
   phase('weather');
   await reportPhase(`fetching weather for ${city}`);
   const weatherRaw = await command(`python3 "${WEATHER_PY}" "${city}"`, {
-    member_name: 'DEMO-DOER',
+    member_name: 'doer',
     failSoft: true,
   });
   const weather = safeJson(typeof weatherRaw === 'string' ? weatherRaw : weatherRaw?.output ?? toolText(weatherRaw));
@@ -55,7 +55,7 @@ export async function main(context) {
   phase('timezone');
   await reportPhase(`fetching local time for ${city}`);
   const timeRaw = await command(`python3 "${TIMEZONE_PY}" "${city}"`, {
-    member_name: 'DEMO-DOER',
+    member_name: 'doer',
     failSoft: true,
   });
   const timeInfo = safeJson(typeof timeRaw === 'string' ? timeRaw : timeRaw?.output ?? toolText(timeRaw));
@@ -77,7 +77,7 @@ export async function main(context) {
     'Reply with ONLY the briefing text, no preamble.',
   ].join('\n');
 
-  const briefing = await agent(prompt, { member_name: 'DEMO-DOER' });
+  const briefing = await agent(prompt, { member_name: 'doer' });
   log(`briefing: ${briefing}`);
   if (cancelled()) return { cancelled: true, weather, time: timeInfo, briefing };
 
@@ -86,7 +86,7 @@ export async function main(context) {
   await reportPhase('analyzing briefing text');
   const escaped = briefing.replace(/"/g, '\\"').replace(/\n/g, ' ');
   const statsRaw = await command(`python3 "${TEXTSTATS_PY}" "${escaped}"`, {
-    member_name: 'DEMO-DOER',
+    member_name: 'doer',
     failSoft: true,
   });
   const stats = safeJson(typeof statsRaw === 'string' ? statsRaw : statsRaw?.output ?? toolText(statsRaw));

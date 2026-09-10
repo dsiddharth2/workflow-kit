@@ -36,38 +36,37 @@ export const defaultRegistry = [
     name: 'demo',
     description:
       'Runs the demo workflow end to end: fleet status, the dummy python command, ' +
-      'the transform, and an agent smoke test. DEMO-DOER is registered when Fleet is spawned. ' +
+      'the transform, and an agent smoke test. The leased doer runs the command and agent steps. ' +
       'Choose this to run the demo workflow or to verify that Fleet plumbing works. ' +
       'Spends LLM tokens and can take a minute.',
     annotations: { readOnlyHint: false, idempotentHint: true },
-    async run({ fleetApi, signal, reportPhase }) {
-      const result = await runDemo({ fleetApi, signal, reportPhase });
+    async run({ fleetApi, workspace, signal, reportPhase }) {
+      const result = await runDemo({ fleetApi, workspace, signal, reportPhase });
       return `demo workflow completed: ${JSON.stringify(result)}`;
     },
   },
   {
     name: 'inspect-members',
     description:
-      "Reports on this repo's Fleet members: which are registered, and what is in each " +
-      'work folder on the Fleet host. Choose this to check fleet health or to see what a ' +
-      'member has been doing. Read-only and spends no LLM tokens.',
+      "Reports on the worker pair this call is running on: whether each role's member is " +
+      'registered, and what is in its work folder. Choose this to check fleet health or to see ' +
+      'what a worker has been doing. Read-only and spends no LLM tokens.',
     inputSchema: z.object({
-      members: z
-        .array(z.enum(['DEMO-DOER', 'DEMO-REVIEWER']))
+      roles: z
+        .array(z.enum(['doer', 'reviewer']))
         .optional()
-        .describe(
-          'Member names to inspect. Defaults to DEMO-DOER and DEMO-REVIEWER.',
-        ),
+        .describe('Roles to inspect on the leased worker. Defaults to both.'),
       includeFiles: z
         .boolean()
         .optional()
         .describe('Include a capped listing of top-level entries in each work folder.'),
     }),
     annotations: { readOnlyHint: true, idempotentHint: true },
-    async run({ fleetApi, args, signal, reportPhase }) {
+    async run({ fleetApi, args, signal, reportPhase, workspace }) {
       return await runInspectMembers({
         fleetApi,
-        members: args.members,
+        workspace,
+        roles: args.roles,
         includeFiles: args.includeFiles,
         signal,
         reportPhase,
@@ -87,9 +86,10 @@ export const defaultRegistry = [
         .describe('City name to brief on. Defaults to London.'),
     }),
     annotations: { readOnlyHint: true, idempotentHint: false },
-    async run({ fleetApi, args, signal, reportPhase }) {
+    async run({ fleetApi, args, signal, reportPhase, workspace }) {
       const result = await runCityBriefing({
         fleetApi,
+        workspace,
         city: args.city,
         signal,
         reportPhase,
@@ -113,7 +113,7 @@ export const defaultRegistry = [
       const city = args.city || 'London';
       const script = path.join(toolsDir, 'weather', 'weather.py');
       const raw = await fleetApi.executeCommand({
-        member_name: 'DEMO-DOER',
+        member_name: 'doer',
         command: `python3 "${script}" "${city}"`,
       });
       return parseToolOutput(raw);
@@ -135,7 +135,7 @@ export const defaultRegistry = [
       const city = args.city || 'London';
       const script = path.join(toolsDir, 'timezone', 'timezone.py');
       const raw = await fleetApi.executeCommand({
-        member_name: 'DEMO-DOER',
+        member_name: 'doer',
         command: `python3 "${script}" "${city}"`,
       });
       return parseToolOutput(raw);
@@ -156,7 +156,7 @@ export const defaultRegistry = [
       const escaped = args.text.replace(/"/g, '\\"').replace(/\n/g, ' ');
       const script = path.join(toolsDir, 'textstats', 'textstats.py');
       const raw = await fleetApi.executeCommand({
-        member_name: 'DEMO-DOER',
+        member_name: 'doer',
         command: `python3 "${script}" "${escaped}"`,
       });
       return parseToolOutput(raw);

@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { withStandaloneLease } from '../standalone.mjs';
 import { ensureApralabs } from './ensure-apralabs.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -7,31 +8,20 @@ const engineScript = path.join(here, 'demo.js');
 
 export const selfExecuting = true;
 
-export async function runDemo({ fleetApi, signal, reportPhase } = {}) {
+// fleetApi must already resolve 'doer'/'reviewer' (a PooledFleetApi) and
+// workspace must describe the leased pair. With no fleetApi this is a CLI run
+// and the standalone helper provides both.
+export async function runDemo({ fleetApi, workspace, signal, reportPhase } = {}) {
   ensureApralabs();
+  if (!fleetApi) {
+    return withStandaloneLease((ctx) => runDemo({ ...ctx, reportPhase }));
+  }
   const { FleetWorkflow } = await import('@apralabs/apra-fleet-workflow');
   const { WorkflowEngine } = await import('@apralabs/apra-fleet-workflow/engine');
 
-  let api = fleetApi;
-  let stop = null;
-  if (!api) {
-    const { spawnFleet } = await import('../../transport/stdio-fleet.mjs');
-    const repoRoot = path.resolve(here, '../..');
-    const fleet = await spawnFleet({
-      memberName: 'DEMO-DOER',
-      workFolder: path.join(repoRoot, 'workdir', 'DEMO-DOER'),
-    });
-    api = fleet.fleetApi;
-    stop = fleet.stop;
-  }
-
-  try {
-    const workflow = new FleetWorkflow(api);
-    const engine = new WorkflowEngine(workflow);
-    return await engine.executeFile(engineScript, { fleetApi: api, signal, reportPhase });
-  } finally {
-    await stop?.();
-  }
+  const workflow = new FleetWorkflow(fleetApi);
+  const engine = new WorkflowEngine(workflow);
+  return await engine.executeFile(engineScript, { fleetApi, workspace, signal, reportPhase });
 }
 
 function isMainModule() {
