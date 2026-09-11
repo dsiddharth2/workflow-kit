@@ -96,6 +96,31 @@ test('caller abort signal is respected', async () => {
   assert.match(out.error, /timeout|abort/);
 });
 
+test('missing or invalid timeout returns error-as-value rather than throwing', async () => {
+  const invalid = makeTool({
+    timeout: 'not-a-number',
+    run: async () => 'ok',
+  });
+  const invalidOut = await executeTool(invalid, { fleetApi: mockFleetApi, args: {} });
+  assert.equal(invalidOut.ok, false);
+  assert.equal(typeof invalidOut.error, 'string');
+
+  const missing = makeTool({ run: async () => { throw new Error('should be wrapped'); } });
+  delete missing.timeout;
+  const missingOut = await executeTool(missing, { fleetApi: mockFleetApi, args: {} });
+  assert.equal(missingOut.ok, false);
+  assert.equal(typeof missingOut.error, 'string');
+});
+
+test('run throwing null returns tool_error', async () => {
+  const tool = makeTool({
+    run: async () => { throw null; },
+  });
+  const out = await executeTool(tool, { fleetApi: mockFleetApi, args: {} });
+  assert.equal(out.ok, false);
+  assert.equal(out.error, 'tool_error');
+});
+
 test('extra context is passed through to run()', async () => {
   let received;
   const tool = makeTool({

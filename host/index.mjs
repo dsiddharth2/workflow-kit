@@ -30,6 +30,9 @@ export async function startHost({
   fleetApi,
   dispatcher,
   port,
+  bindHost: bindHostOption,
+  adapter: adapterName,
+  createAdapter,
   env = process.env,
   registry,
   configDir,
@@ -37,18 +40,7 @@ export async function startHost({
 } = {}) {
   ensureApralabs();
 
-  let config;
-  try {
-    config = await loadConfig(configDir ?? defaultConfigDir(), env);
-  } catch {
-    config = {
-      name: 'workflow-kit',
-      description: '',
-      fleet: {},
-      comm: { adapter: 'express', port: port ?? Number(env.PORT ?? 3000), host: env.MCP_BIND_HOST ?? '127.0.0.1' },
-      modules: {},
-    };
-  }
+  const config = await loadConfig(configDir ?? defaultConfigDir(), env);
 
   let api = fleetApi;
   let stopFleet = null;
@@ -87,9 +79,11 @@ export async function startHost({
     }
   };
 
-  const adapter = resolveAdapter(config.comm.adapter);
+  const adapter = createAdapter
+    ? createAdapter()
+    : resolveAdapter(adapterName ?? config.comm.adapter);
   const listenPort = port ?? config.comm.port;
-  const bindHost = config.comm.host;
+  const bindHost = bindHostOption ?? config.comm.host;
 
   try {
     await adapter.start({
@@ -104,6 +98,7 @@ export async function startHost({
       authenticate,
     });
   } catch (err) {
+    try { await adapter.stop(); } catch { /* preserve */ }
     try { await ownDispatcher?.close(); } catch { /* preserve */ }
     try { await stopFleet?.(); } catch { /* preserve */ }
     throw err;
@@ -119,7 +114,16 @@ export async function startHost({
     if (!tool) {
       return { ok: false, error: 'not_found', message: `tool "${name}" not found` };
     }
-    const lease = await activeDispatcher.dispatch({ signal });
+    let lease;
+    try {
+      lease = await activeDispatcher.dispatch({ signal });
+    } catch (err) {
+      return {
+        ok: false,
+        error: 'dispatch_failed',
+        message: String(err?.message ?? err),
+      };
+    }
     try {
       return await executeTool(tool, {
         fleetApi: createPooledFleetApi(api, lease),
@@ -147,6 +151,7 @@ export async function startHost({
     host: adapter,
     callTool,
     close,
+    stop: close,
     config,
     registry: toolRegistry,
   };
@@ -158,7 +163,14 @@ export function createHost(options = {}) {
 
   const builder = {
     tools(registry)   { overrides.registry = registry; return builder; },
-    comm(commConfig)  { Object.assign(overrides, commConfig); return builder; },
+    comm(commConfig)  {
+      if (commConfig && typeof commConfig === 'object') {
+        if ('port' in commConfig) overrides.port = commConfig.port;
+        if ('host' in commConfig) overrides.bindHost = commConfig.host;
+        if ('adapter' in commConfig) overrides.adapter = commConfig.adapter;
+      }
+      return builder;
+    },
     build() {
       return {
         start: () => startHost(overrides),

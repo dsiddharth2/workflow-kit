@@ -12,7 +12,7 @@ export function extendRegistry(registry = defaultRegistry) {
   return registry.map(entry => ({
     ...DEFAULTS,
     ...entry,
-    tags: entry.tags ?? DEFAULTS.tags,
+    tags: [...(entry.tags ?? [])],
   }));
 }
 

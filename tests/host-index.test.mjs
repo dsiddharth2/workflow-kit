@@ -142,3 +142,93 @@ test('close shuts down cleanly', async () => {
     /ECONNREFUSED/,
   );
 });
+
+test('startHost rethrows loadConfig failures', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'host-bad-config-'));
+  await fs.writeFile(path.join(dir, 'host.config.mjs'), `export default {
+    fleet: {},
+    comm: { adapter: 'express' },
+  };`);
+  const fleetApi = makeMockFleetApi();
+  const dispatcher = await makeDispatcher();
+  await assert.rejects(
+    () => startHost({ fleetApi, dispatcher, port: 0, configDir: dir }),
+    /name/i,
+  );
+});
+
+test('createHost.comm applies bind host and stop aliases close', async () => {
+  const fleetApi = makeMockFleetApi();
+  const dispatcher = await makeDispatcher();
+  const { start } = createHost({ fleetApi, dispatcher })
+    .comm({ port: 0, host: '127.0.0.1' })
+    .tools(undefined)
+    .build();
+  const started = await start();
+  const port = started.host.port();
+  try {
+    assert.equal(started.stop, started.close);
+    const res = await new Promise((resolve, reject) => {
+      const req = httpRequest({
+        hostname: '127.0.0.1', port, path: '/health', method: 'GET', agent: false,
+      }, (res) => {
+        let data = '';
+        res.on('data', (chunk) => { data += chunk; });
+        res.on('end', () => resolve({ status: res.statusCode, body: JSON.parse(data) }));
+      });
+      req.on('error', reject);
+      req.end();
+    });
+    assert.equal(res.status, 200);
+    assert.deepEqual(res.body, { ok: true });
+  } finally {
+    await started.stop();
+  }
+  await assert.rejects(
+    () => new Promise((resolve, reject) => {
+      const req = httpRequest({
+        hostname: '127.0.0.1', port, path: '/health', method: 'GET',
+      }, resolve);
+      req.on('error', reject);
+      req.end();
+    }),
+    /ECONNREFUSED/,
+  );
+});
+
+test('callTool maps dispatch failures to error-as-value', async () => {
+  const fleetApi = makeMockFleetApi();
+  const dispatcher = await makeDispatcher();
+  dispatcher.dispatch = async () => {
+    throw new Error('queue overflow');
+  };
+  const { callTool, close } = await startHost({ fleetApi, dispatcher, port: 0 });
+  try {
+    const out = await callTool('inspect-members', {});
+    assert.equal(out.ok, false);
+    assert.ok(out.error);
+    assert.ok(out.message);
+  } finally {
+    await close();
+  }
+});
+
+test('listen failure stops the adapter', async () => {
+  let stopped = false;
+  const fakeAdapter = {
+    async start() { throw new Error('listen failed'); },
+    async stop() { stopped = true; },
+    port() { return undefined; },
+  };
+  const fleetApi = makeMockFleetApi();
+  const dispatcher = await makeDispatcher();
+  await assert.rejects(
+    () => startHost({
+      fleetApi,
+      dispatcher,
+      createAdapter: () => fakeAdapter,
+    }),
+    /listen failed/,
+  );
+  assert.equal(stopped, true);
+});
