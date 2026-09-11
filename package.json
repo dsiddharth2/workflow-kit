@@ -10,7 +10,10 @@
     "test:unit": "node --test tests/transport-stdio-fleet.test.mjs tests/pool-roster.test.mjs tests/pool-cleanup.test.mjs tests/pool-worker-lock.test.mjs tests/pool-fleet-text.test.mjs tests/pool-pooled-fleet-api.test.mjs tests/pool-worker-pool.test.mjs tests/pool-config.test.mjs tests/pool-member-manager.test.mjs tests/pool-ephemeral-factory.test.mjs tests/pool-worker-dispatcher.test.mjs tests/pool-index.test.mjs",
     "test:integration": "node --test tests/demo.test.mjs tests/inspect-members.test.mjs tests/mcp.test.mjs",
     "test:load": "node tests/load-test.mjs",
-    "mcp": "node mcp/main.mjs"
+    "mcp": "node mcp/main.mjs",
+    "host": "node host/index.mjs",
+    "test:host": "node --test tests/host-config.test.mjs tests/host-registry.test.mjs tests/host-executor.test.mjs tests/comm-express.test.mjs tests/host-index.test.mjs",
+    "test:host:live": "node --test tests/host.live.test.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/client": "^2.0.0",
