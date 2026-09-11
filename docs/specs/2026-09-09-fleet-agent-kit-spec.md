@@ -1,6 +1,46 @@
 # Fleet Agent Kit
 
-Status: proposed
+Status: proposed — foundation shipped, phases pending.
+
+## What is already shipped
+
+The workflow-kit already implements the mandatory foundation that this spec builds on:
+
+### Transport and MCP
+
+- Stdio transport — `apra-fleet run --transport stdio` as a child process, no server prerequisite
+- MCP server — stateless HTTP, one tool per registry entry, Zod schemas, progress heartbeats
+- 6 MCP tools: `demo`, `inspect-members`, `city-briefing`, `weather`, `timezone`, `textstats`
+
+### Worker dispatch (covers parts of Phase 4 and Phase 5)
+
+- Pre-provisioned worker pool — N doer/reviewer pairs with cross-process file locks
+- Ephemeral worker factory — on-demand pairs in `os.tmpdir()`, self-destruct on release
+- Tiered dispatcher — pool → ephemeral → queue → reject, shared FIFO wait queue
+- MemberManager — Node-side registration, OAuth provisioning, teardown
+- PooledFleetApi — remaps `'doer'`/`'reviewer'` keywords to lease member names
+
+### Workflows and tools
+
+- demo — status, python command, local transform, agent smoke test
+- inspect-members — read-only worker pair inspection
+- city-briefing — multi-tool: weather API, timezone API, text stats, agent briefing
+- Python tool scripts: `tools/weather/`, `tools/timezone/`, `tools/textstats/` (stdlib only)
+- Launcher/body split convention with `withStandaloneLease()` for CLI runs
+
+### Infrastructure
+
+- Docker image, compose file, entrypoint with dep install and `@apralabs` symlinks
+- GitHub Actions CI — unit tests, integration tests (Docker), load tests with PR reporting
+- Full mock test suite, live test suite, load test harness
+
+### Near-term improvements (before Phase 1)
+
+- Mock test for city-briefing workflow
+- Deprecation notice on `scripts/provision-members.sh`
+- Additional Python tool scripts
+
+---
 
 ## Problem
 

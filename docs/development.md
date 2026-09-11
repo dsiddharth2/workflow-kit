@@ -68,6 +68,11 @@ If `apra-fleet` is not on PATH, set `APRA_FLEET_BIN` to the binary.
 | `npm run mcp` | yes | only for `demo` |
 | `python3 workflows/demo/dummy.py` | no | no |
 | `python3 workflows/inspect-members/inspect.py --root <work-folder>` | no | no |
+| `node workflows/city-briefing/main.mjs [city]` | yes | yes |
+| `node tests/load-test.mjs --tool <name> --concurrency <n>` | no | no |
+| `python3 tools/weather/weather.py [city]` | no | no |
+| `python3 tools/timezone/timezone.py [city]` | no | no |
+| `python3 tools/textstats/textstats.py "text"` | no | no |
 
 A successful live workflow run prints `agent result: pong` and **returns to the shell**
 with exit 0. If it prints `pong` and hangs, the transport was not stopped — check the
@@ -97,6 +102,9 @@ fake MCP client.
 `tests/mcp.test.mjs` also needs no Fleet binary or token. It drives a real MCP client
 over a real ephemeral port against the HTTP application, with Fleet mocked underneath.
 Those files are what `npm test` runs, and what you should run constantly.
+
+The `city-briefing` workflow does not yet have a mock test. Its correctness is
+verified by the live and load tests.
 
 The workflow mock is a hand-written object implementing the methods the body actually
 uses (`fleetStatus`, `executeCommand`, `executePrompt`) and recording its calls. It
@@ -185,6 +193,9 @@ provisioning script on the startup path.
 - **Dynamic `import()` for Fleet packages**, always after `ensureApralabs()`.
 - **Secrets live in Fleet's credential store and `CLAUDE_CODE_OAUTH_TOKEN`**, never in
   source, never in an `agent()` payload, never in git.
+- **Python tools use only stdlib.** `tools/` scripts use `urllib.request`,
+  `json`, `sys` — no pip dependencies. Keep it that way so Docker needs only
+  `python3`.
 - **Comments explain why, not what.** The existing comments mark non-obvious
   constraints — why `'junction'`, why `failSoft` is defined as non-enumerable.
 
