@@ -56,6 +56,22 @@ function parseArgs() {
 }
 
 // ---------------------------------------------------------------------------
+// Error classification
+// ---------------------------------------------------------------------------
+function classifyError(msg) {
+  if (!msg) return 'unknown';
+  const lower = msg.toLowerCase();
+  if (/429|rate.?limit|too many requests|overloaded/i.test(msg)) return '429-rate-limit';
+  if (/overflow|queue.*(full|busy)|retry later/i.test(msg)) return 'dispatch-overflow';
+  if (/shutting down|closed/i.test(msg)) return 'shutdown';
+  if (/timeout|timed out/i.test(msg)) return 'timeout';
+  if (/abort|cancel/i.test(msg)) return 'aborted';
+  if (/ECONNREFUSED|ECONNRESET|socket/i.test(msg)) return 'connection';
+  if (/auth|unauthorized|403|401/i.test(msg)) return 'auth';
+  return 'other';
+}
+
+// ---------------------------------------------------------------------------
 // Single MCP tool call — returns timing + result metadata
 // ---------------------------------------------------------------------------
 async function callOnce(mcpUrl, toolName, toolArgs, callId) {
@@ -64,6 +80,7 @@ async function callOnce(mcpUrl, toolName, toolArgs, callId) {
   let workerId = null;
   let tier = null;
   let error = null;
+  let errorKind = null;
   let queueMessages = [];
 
   const client = new Client({ name: `load-${callId}`, version: '1.0.0' });
@@ -85,7 +102,9 @@ async function callOnce(mcpUrl, toolName, toolArgs, callId) {
     const done = performance.now();
 
     if (result.isError) {
-      error = result.content?.[0]?.text ?? 'unknown error';
+      const errText = result.content?.[0]?.text ?? 'unknown error';
+      error = errText;
+      errorKind = classifyError(errText);
     } else {
       const allText = (result.content ?? []).map((p) => p.text ?? '').join('\n');
       const workerMatch = allText.match(/\[worker:([\w-]+)\]/);
@@ -103,6 +122,7 @@ async function callOnce(mcpUrl, toolName, toolArgs, callId) {
       workerId,
       tier,
       error,
+      errorKind,
       connectMs: Math.round(dispatchedAt - start),
       totalMs: Math.round(done - start),
       dispatchMs: Math.round(done - dispatchedAt),
@@ -110,11 +130,13 @@ async function callOnce(mcpUrl, toolName, toolArgs, callId) {
       queueMessages,
     };
   } catch (err) {
+    const errMsg = err?.message ?? String(err);
     return {
       callId,
       workerId: null,
       tier: null,
-      error: err?.message ?? String(err),
+      error: errMsg,
+      errorKind: classifyError(errMsg),
       connectMs: dispatchedAt ? Math.round(dispatchedAt - start) : null,
       totalMs: Math.round(performance.now() - start),
       dispatchMs: null,
@@ -204,14 +226,36 @@ function printReport(wave, waveNum, config) {
   }
 
   if (failed.length > 0) {
-    console.log('├─────────────────────────────────────────────────────┤');
-    console.log('│  Failures:');
-    for (const r of failed.slice(0, 5)) {
-      const msg = r.error.length > 60 ? r.error.slice(0, 60) + '...' : r.error;
-      console.log(`│    ${r.callId}: ${msg}`);
+    const byKind = {};
+    for (const r of failed) {
+      byKind[r.errorKind] = (byKind[r.errorKind] ?? 0) + 1;
     }
-    if (failed.length > 5) {
-      console.log(`│    ... and ${failed.length - 5} more`);
+    console.log('├─────────────────────────────────────────────────────┤');
+    console.log('│  Failure breakdown:');
+    const kindLabels = {
+      '429-rate-limit': '429 Rate Limited',
+      'dispatch-overflow': 'Dispatch Overflow (queue full/timeout)',
+      'shutdown': 'Server Shutting Down',
+      'timeout': 'Timeout',
+      'aborted': 'Aborted',
+      'connection': 'Connection Error',
+      'auth': 'Auth/Permission Error',
+      'other': 'Other',
+    };
+    for (const [kind, count] of Object.entries(byKind).sort((a, b) => b[1] - a[1])) {
+      const label = kindLabels[kind] ?? kind;
+      const bar = '▓'.repeat(count);
+      console.log(`│    ${label.padEnd(38)} ${String(count).padStart(3)} ${bar}`);
+    }
+    console.log('│');
+    console.log('│  Failure details:');
+    for (const r of failed.slice(0, 8)) {
+      const tag = `[${r.errorKind}]`;
+      const msg = r.error.length > 50 ? r.error.slice(0, 50) + '...' : r.error;
+      console.log(`│    ${r.callId.padEnd(10)} ${tag.padEnd(22)} ${msg}`);
+    }
+    if (failed.length > 8) {
+      console.log(`│    ... and ${failed.length - 8} more`);
     }
   }
 
@@ -219,15 +263,21 @@ function printReport(wave, waveNum, config) {
 
   // Per-call detail table
   console.log('\n  Call details:');
-  console.log('  ' + 'call'.padEnd(12) + 'tier'.padEnd(12) + 'worker'.padEnd(24) + 'dispatch'.padEnd(12) + 'total'.padEnd(10) + 'queued');
-  console.log('  ' + '─'.repeat(78));
+  console.log('  ' + 'call'.padEnd(10) + 'status'.padEnd(14) + 'worker'.padEnd(22) + 'dispatch'.padEnd(10) + 'total'.padEnd(10) + 'queued');
+  console.log('  ' + '─'.repeat(74));
   for (const r of results) {
-    const tierStr = r.error ? 'FAILED' : r.tier;
-    const workerStr = r.workerId ?? r.error?.slice(0, 22) ?? '—';
+    let statusStr;
+    if (r.error) {
+      const kindShort = { '429-rate-limit': '429', 'dispatch-overflow': 'OVERFLOW', 'shutdown': 'SHUTDOWN', 'timeout': 'TIMEOUT', 'aborted': 'ABORTED', 'connection': 'CONN-ERR', 'auth': 'AUTH-ERR', 'other': 'ERROR' };
+      statusStr = kindShort[r.errorKind] ?? 'FAILED';
+    } else {
+      statusStr = r.tier;
+    }
+    const workerStr = r.workerId ?? '—';
     const dispStr = r.dispatchMs != null ? `${r.dispatchMs}ms` : '—';
     const totalStr = `${r.totalMs}ms`;
-    const qStr = r.queued ? `yes (${r.queueMessages.length} msgs)` : 'no';
-    console.log('  ' + r.callId.padEnd(12) + tierStr.padEnd(12) + workerStr.padEnd(24) + dispStr.padEnd(12) + totalStr.padEnd(10) + qStr);
+    const qStr = r.queued ? `yes (${r.queueMessages.length})` : 'no';
+    console.log('  ' + r.callId.padEnd(10) + statusStr.padEnd(14) + workerStr.padEnd(22) + dispStr.padEnd(10) + totalStr.padEnd(10) + qStr);
   }
 }
 
