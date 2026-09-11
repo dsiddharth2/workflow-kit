@@ -6,8 +6,8 @@ import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/cli
 const { startMcpServer } = await import('../mcp/main.mjs');
 
 // Spawns real Fleet over stdio. Spends no LLM tokens: inspect-members makes
-// no agent() call. Needs the apra-fleet binary; DEMO-REVIEWER must already
-// exist in Fleet's data dir (Docker provision, or a prior register).
+// no agent() call. Needs the apra-fleet binary. The leased pair is a pool
+// worker (WORKER-{i}-DOER / -REVIEWER), not the retired DEMO members.
 test('inspect-members reports on live members over MCP', { timeout: 180000 }, async () => {
   const { server, close } = await startMcpServer({ port: 0 });
   const url = new URL(`http://127.0.0.1:${server.address().port}/mcp`);
@@ -17,16 +17,20 @@ test('inspect-members reports on live members over MCP', { timeout: 180000 }, as
     await client.connect(new StreamableHTTPClientTransport(url));
 
     const { tools } = await client.listTools();
-    assert.deepEqual(tools.map((tool) => tool.name).sort(), ['demo', 'inspect-members']);
+    assert.ok(tools.some((tool) => tool.name === 'inspect-members'));
+    assert.ok(tools.some((tool) => tool.name === 'demo'));
 
     const result = await client.callTool({ name: 'inspect-members', arguments: {} });
     assert.equal(result.isError, undefined, `tool call failed: ${result.content?.[0]?.text}`);
 
     const report = JSON.parse(result.content[0].text);
+    assert.match(report.workerId, /^(pool|ephemeral)-/);
     assert.deepEqual(
-      report.members.map((entry) => entry.name),
-      ['DEMO-DOER', 'DEMO-REVIEWER'],
+      report.members.map((entry) => entry.role),
+      ['doer', 'reviewer'],
     );
+    assert.match(report.members[0].name, /^WORKER-\d+-DOER$/);
+    assert.match(report.members[1].name, /^WORKER-\d+-REVIEWER$/);
     for (const member of report.members) {
       assert.equal(member.present, true, `${member.name} should be registered`);
       assert.equal(member.report.exists, true, `${member.name} work folder should exist`);

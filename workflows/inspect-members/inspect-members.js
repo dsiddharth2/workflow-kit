@@ -1,36 +1,13 @@
-import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { memberIsPresent, toolText } from '../../pool/fleet-text.mjs';
 
 export const meta = { name: 'inspect-members' };
 
-const DOER = 'DEMO-DOER';
-const REVIEWER = 'DEMO-REVIEWER';
+// A run may only inspect the pair it holds. Reporting on another run's worker
+// would be the same-member collision the pool exists to prevent.
+export const ROLES = Object.freeze(['doer', 'reviewer']);
 
-// Default to the members this repo owns. A shared Fleet server may host other
-// projects' members, and reporting on those would leak unrelated information.
-const DEFAULT_MEMBERS = [DOER, REVIEWER];
-
-const here = path.dirname(fileURLToPath(import.meta.url));
-const repoRoot = path.resolve(here, '../..');
 const INSPECT_PY = fileURLToPath(new URL('./inspect.py', import.meta.url));
-const MEMBER_TARGETS = new Map([
-  [DOER, { name: DOER, workFolder: path.join(repoRoot, 'workdir', DOER) }],
-  [REVIEWER, { name: REVIEWER, workFolder: path.join(repoRoot, 'workdir', REVIEWER) }],
-]);
-
-function toolText(result) {
-  if (result == null) return '';
-  if (typeof result === 'string') return result;
-  const parts = result.content ?? [];
-  if (parts.length > 0) {
-    return parts.map((part) => part.text ?? '').join('\n');
-  }
-  try {
-    return JSON.stringify(result);
-  } catch {
-    return String(result);
-  }
-}
 
 // The engine returns { ok, output, error } — verified from a live run. A
 // failSoft failure carries an empty output and puts the reason in `error`, so
@@ -65,61 +42,59 @@ function parseReport(text) {
   return null;
 }
 
-function memberListedInStatus(statusText, name) {
-  return statusText.split(/[\n\r]/).some((line) => line.includes(name));
-}
-
 export async function main(context) {
   const { phase, command, log, args } = context;
   const fleetApi = args.fleetApi;
   if (!fleetApi) {
     throw new Error('inspect-members.js requires args.fleetApi');
   }
+  const workspace = args.workspace;
+  if (!workspace?.doer || !workspace?.reviewer) {
+    throw new Error('inspect-members.js requires args.workspace with doer and reviewer');
+  }
   const signal = args.signal;
   const reportPhase = args.reportPhase ?? (() => {});
   const includeFiles = args.includeFiles === true;
-  const requestedMembers =
-    Array.isArray(args.members) && args.members.length > 0 ? args.members : DEFAULT_MEMBERS;
-  const targets = requestedMembers.map((name) => {
-    const target = MEMBER_TARGETS.get(name);
-    if (!target) {
-      throw new Error(`Unsupported member: ${String(name)}`);
+  const requestedRoles = Array.isArray(args.roles) && args.roles.length > 0 ? args.roles : ROLES;
+  const targets = requestedRoles.map((role) => {
+    if (!ROLES.includes(role)) {
+      throw new Error(`Unsupported role: ${String(role)}`);
     }
-    return target;
+    return { role, name: workspace[role].name, folder: workspace[role].folder };
   });
 
-  phase('status');
-  await reportPhase('reading fleet status');
-  const statusText = toolText(await fleetApi.fleetStatus());
+  phase('members');
+  await reportPhase('listing fleet members');
+  const listed = toolText(await fleetApi.listMembers({}));
 
   const members = [];
-  for (const { name, workFolder } of targets) {
+  for (const { role, name, folder } of targets) {
     if (signal?.aborted) {
-      log(`cancelled before inspecting ${name}`);
+      log(`cancelled before inspecting ${role}`);
       break;
     }
 
-    if (!memberListedInStatus(statusText, name)) {
+    if (!memberIsPresent(listed, name)) {
       log(`${name} is not registered`);
-      members.push({ name, present: false });
+      members.push({ role, name, present: false });
       continue;
     }
 
-    phase(`inspect ${name}`);
-    await reportPhase(`inspecting ${name}`);
+    phase(`inspect ${role}`);
+    await reportPhase(`inspecting ${role} (${name})`);
     const flags = includeFiles ? ' --files' : '';
     const raw = await command(
-      `python3 "${INSPECT_PY}" --root "${workFolder}"${flags}`,
-      { member_name: name, failSoft: true },
+      `python3 "${INSPECT_PY}" --root "${folder}"${flags}`,
+      { member_name: role, failSoft: true },
     );
     const text = commandText(raw);
     const report = parseReport(text);
     if (report) {
-      members.push({ name, present: true, report });
+      members.push({ role, name, present: true, report });
     } else {
-      members.push({ name, present: true, error: text.trim() || 'no report produced' });
+      members.push({ role, name, present: true, error: text.trim() || 'no report produced' });
     }
   }
 
-  return { generatedAt: new Date().toISOString(), members };
+  return { generatedAt: new Date().toISOString(), workerId: workspace.workerId, members };
 }

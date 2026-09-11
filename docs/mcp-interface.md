@@ -18,8 +18,9 @@ export CLAUDE_CODE_OAUTH_TOKEN="$(claude setup-token)"   # only for demo / agent
 npm run mcp
 ```
 
-`startMcpServer()` calls `spawnFleet()` for `DEMO-DOER`. Register this server with
-Claude Code:
+`startMcpServer()` spawns Fleet over stdio and builds a worker dispatcher that
+registers pool members. Every tool call holds one leased doer/reviewer pair.
+Register this server with Claude Code:
 
 ```bash
 claude mcp add --transport http fleet http://127.0.0.1:3000/mcp
@@ -34,12 +35,12 @@ on PATH.
 | Tool | Arguments | Behavior |
 |---|---|---|
 | `demo` | None | Runs the complete demo, including the agent smoke test. It spends LLM tokens and is not read-only. |
-| `inspect-members` | `members`, `includeFiles` | Reports member registration and work-folder information. It is read-only and spends no LLM tokens. |
+| `inspect-members` | `roles`, `includeFiles` | Reports on the pair the call is running on. It is read-only and spends no LLM tokens. |
 
 `inspect-members` accepts:
 
-- `members`: optional array of member names. It defaults to `DEMO-DOER` and
-  `DEMO-REVIEWER`.
+- `roles`: optional array of `'doer'` and `'reviewer'`. It defaults to both roles
+  on the leased pair this call is running on.
 - `includeFiles`: optional boolean. When true, include a capped top-level directory
   listing for each member.
 
@@ -137,6 +138,6 @@ tokens. `MAX_MCP_OUTPUT_TOKENS` controls the truncation limit. Independently,
 | Symptom | Fix |
 |---|---|
 | `apra-fleet` spawn error | Install Fleet or set `APRA_FLEET_BIN`, then restart the MCP server. |
-| `OAuth session expired` | Re-authenticate `DEMO-DOER` in Fleet's credential store. |
+| `OAuth session expired` | Re-export `CLAUDE_CODE_OAUTH_TOKEN` and restart so Node can re-attach OAuth to the pool. |
 | A tool is not chosen | Improve its `description` in `mcp/registry.mjs` so the model knows when to use it. |
 | A tool call times out | Set `"timeout"` in that server's `.mcp.json` entry; use `600000` for a ten-minute allowance. |
