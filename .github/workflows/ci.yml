@@ -63,7 +63,7 @@ jobs:
             -e WORKER_EPHEMERAL_MAX=3 \
             -e WORKER_DISPATCH_QUEUE_SIZE=10 \
             workflow-kit-ci \
-            node tests/load-test.mjs --concurrency 8 2>&1 \
+            node tests/load-test.mjs --tool inspect-members --concurrency 8 2>&1 \
             | grep -A 1000 '┌─')
           echo "report<<LOAD_EOF" >> "$GITHUB_OUTPUT"
           echo "$output" >> "$GITHUB_OUTPUT"
@@ -74,7 +74,7 @@ jobs:
         run: |
           output=$(docker run --rm \
             workflow-kit-ci \
-            node tests/load-test.mjs --concurrency 20 2>&1 \
+            node tests/load-test.mjs --tool inspect-members --concurrency 20 2>&1 \
             | grep -A 1000 '┌─')
           echo "report<<LOAD_EOF" >> "$GITHUB_OUTPUT"
           echo "$output" >> "$GITHUB_OUTPUT"
