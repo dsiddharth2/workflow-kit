@@ -1,0 +1,46 @@
+name: CI — Host
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  host-unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run test:host
+
+  host-integration-tests:
+    runs-on: ubuntu-latest
+    needs: host-unit-tests
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: docker build -t workflow-kit-ci .
+
+      - name: Run host unit tests in Docker
+        run: |
+          docker run --rm workflow-kit-ci \
+            node --test \
+              tests/host-config.test.mjs \
+              tests/host-registry.test.mjs \
+              tests/host-executor.test.mjs \
+              tests/comm-express.test.mjs \
+              tests/host-index.test.mjs
+
+      - name: Run host live integration test
+        run: |
+          docker run --rm workflow-kit-ci \
+            node --test tests/host.live.test.mjs
