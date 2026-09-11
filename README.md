@@ -45,6 +45,17 @@ You only write two things:
 - **Workflow bodies** — the actual work your agents do (`workflows/`)
 - **Tool entries** — one entry per workflow in the MCP registry (`mcp/registry.mjs`)
 
+The kit also ships with ready-to-use tools and workflows:
+
+| Tool | What it does | Spends tokens? |
+|---|---|---|
+| `demo` | End-to-end smoke test: fleet status, python command, transform, agent prompt | Yes |
+| `inspect-members` | Reports on the worker pair: registration, work folders | No |
+| `city-briefing` | Fetches live weather + local time, composes a briefing with an agent | Yes |
+| `weather` | Current weather for a city via wttr.in | No |
+| `timezone` | Local time and timezone for a city via World Time API | No |
+| `textstats` | Character, word, and sentence counts for a text string | No |
+
 ---
 
 ## Writing your first workflow
@@ -127,7 +138,7 @@ deployment (Function Apps) or `WORKER_EPHEMERAL_MAX=0` for pool-only.
 Node registers members and provisions OAuth at startup from
 `CLAUDE_CODE_OAUTH_TOKEN`; there is no provisioning script to run.
 
-### 4. Run it
+### 3. Run it
 
 ```bash
 docker compose up
@@ -276,8 +287,13 @@ in Fleet's in-memory credential store.
 |---|---|---|
 | `CLAUDE_CODE_OAUTH_TOKEN` | — | OAuth token inherited by spawned Fleet processes |
 | `WORKER_POOL_SIZE` | `4` | Pre-registered doer/reviewer pairs |
+| `WORKER_POOL_ROOT` | `./workdir` | Base folder for pool worker dirs and locks |
+| `WORKER_POOL_ACQUIRE_TIMEOUT_MS` | `300000` | Timeout for pool-internal acquire |
 | `WORKER_EPHEMERAL_MAX` | `10` | Extra pairs created under `os.tmpdir()` when the pool is busy |
+| `WORKER_EPHEMERAL_ROOT` | `os.tmpdir()/workflow-kit` | Base folder for ephemeral worker dirs |
+| `WORKER_EPHEMERAL_TTL_MS` | `600000` | Force-teardown safety net for ephemeral workers |
 | `WORKER_DISPATCH_QUEUE_SIZE` | `20` | Calls waiting when both tiers are busy |
+| `WORKER_DISPATCH_QUEUE_TIMEOUT_MS` | `300000` | Timeout for queued dispatch waiters |
 | `APRA_FLEET_BIN` | `apra-fleet` on PATH | Fleet binary when it is not on PATH |
 | `MCP_PORT` | `3000` | Host port mapped to the MCP server |
 | `MCP_BIND_HOST` | `0.0.0.0` (compose) / `127.0.0.1` (local) | MCP server bind address |
@@ -294,6 +310,7 @@ MCP_PORT=4000 docker compose up
 
 ```text
 workflows/
+  standalone.mjs        # shared lease helper for CLI runs (withStandaloneLease)
   demo/                 # demo workflow — replace with your own
     main.mjs            # launcher: spawnFleet, execute, stop()
     demo.js             # body: status, command, transform, agent
@@ -301,6 +318,12 @@ workflows/
     ensure-apralabs.mjs # symlinks @apralabs packages from Fleet install
   inspect-members/      # read-only member inspection workflow
     main.mjs, inspect-members.js, inspect.py
+  city-briefing/        # multi-tool workflow: weather + timezone + agent briefing
+    main.mjs, city-briefing.js, workflow.json
+tools/
+  weather/weather.py    # current weather via wttr.in
+  timezone/timezone.py  # local time via World Time API
+  textstats/textstats.py # character, word, sentence counts
 transport/
   stdio-fleet.mjs       # spawn apra-fleet over stdio, wrap as fleetApi
 mcp/
@@ -313,7 +336,12 @@ mcp/
 scripts/
   docker-entrypoint.sh  # install deps, link packages, exec
 tests/                  # mock and live test suites
-pool/                   # worker pool, ephemeral factory, dispatcher
+pool/                   # worker pool, ephemeral factory, tiered dispatcher
+  worker-dispatcher.mjs # tries pool → ephemeral → queue → reject
+  worker-pool.mjs       # pre-registered pairs with file locks
+  ephemeral-factory.mjs # on-demand pairs in tmpdir, self-destructing
+  member-manager.mjs    # registers members and provisions OAuth
+  roster.mjs, cleanup.mjs, worker-lock.mjs, pooled-fleet-api.mjs, config.mjs
 workdir/                # leftover member folders (pool uses its own root)
 docs/
   architecture.md       # layers, data flow, design decisions
@@ -350,3 +378,6 @@ docker-compose.yml
 | [docs/development.md](docs/development.md) | First-time setup, testing, adding workflows, conventions |
 | [docs/mcp-interface.md](docs/mcp-interface.md) | MCP tool catalog, registry contract, timeouts, auth, hosting |
 | [docs/specs/stdio-transport-spec.md](docs/specs/stdio-transport-spec.md) | Stdio Fleet transport design |
+| [docs/specs/concurrency-spec.md](docs/specs/concurrency-spec.md) | Original shared worker pool design |
+| [docs/specs/2026-09-10-tiered-worker-dispatch-design.md](docs/specs/2026-09-10-tiered-worker-dispatch-design.md) | Tiered worker dispatch (pool + ephemeral + queue) design |
+| [docs/specs/2026-09-09-fleet-agent-kit-spec.md](docs/specs/2026-09-09-fleet-agent-kit-spec.md) | Future Fleet Agent Kit vision (proposed) |

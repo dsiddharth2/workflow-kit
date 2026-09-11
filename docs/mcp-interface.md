@@ -34,8 +34,12 @@ on PATH.
 
 | Tool | Arguments | Behavior |
 |---|---|---|
-| `demo` | None | Runs the complete demo, including the agent smoke test. It spends LLM tokens and is not read-only. |
-| `inspect-members` | `roles`, `includeFiles` | Reports on the pair the call is running on. It is read-only and spends no LLM tokens. |
+| `demo` | None | Runs the complete demo: fleet status, dummy python command, transform, and agent smoke test. Spends LLM tokens. Not read-only. |
+| `inspect-members` | `roles`, `includeFiles` | Reports on the worker pair the call is running on. Read-only, no LLM tokens. |
+| `city-briefing` | `city` | Fetches live weather and local time, composes a short city briefing using an agent, and analyzes the briefing text. Spends LLM tokens. |
+| `weather` | `city` | Fetches current weather for a city from wttr.in. Returns temperature, humidity, wind, UV index. Read-only, no LLM tokens. |
+| `timezone` | `city` | Fetches current local time and timezone for a city from World Time API. Returns datetime, UTC offset, abbreviation. Read-only, no LLM tokens. |
+| `textstats` | `text` | Analyzes a text string: character count, word count, sentence count, unique words, average word length. Read-only, no LLM tokens. |
 
 `inspect-members` accepts:
 
@@ -43,6 +47,22 @@ on PATH.
   on the leased pair this call is running on.
 - `includeFiles`: optional boolean. When true, include a capped top-level directory
   listing for each member.
+
+`city-briefing` accepts:
+
+- `city`: optional string. City name to brief on. Defaults to `'London'`.
+
+`weather` accepts:
+
+- `city`: optional string. City name to look up. Defaults to `'London'`.
+
+`timezone` accepts:
+
+- `city`: optional string. City name to look up. Defaults to `'London'`.
+
+`textstats` accepts:
+
+- `text`: required string. The text to analyze.
 
 ## Registry contract
 
@@ -54,7 +74,7 @@ on PATH.
   description,
   inputSchema?,
   annotations?,
-  async run({ fleetApi, args, signal, reportPhase }) {
+  async run({ fleetApi, args, signal, reportPhase, workspace }) {
     // Return the final value shown to the model.
   },
 }
