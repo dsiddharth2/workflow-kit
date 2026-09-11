@@ -4,9 +4,10 @@
 // calls, and reports which tier served each request with timing.
 //
 // Usage:
-//   node tests/load-test.mjs                    # defaults: 20 concurrent, inspect-members
+//   node tests/load-test.mjs                    # defaults: 20 concurrent city-briefing calls
 //   node tests/load-test.mjs --concurrency 30   # push past pool+ephemeral into queue
-//   node tests/load-test.mjs --tool weather --concurrency 15
+//   node tests/load-test.mjs --tool inspect-members --concurrency 15  # cheaper, no LLM tokens
+//   node tests/load-test.mjs --city Paris        # city-briefing for Paris
 //   node tests/load-test.mjs --waves 3          # run 3 waves back-to-back
 //   node tests/load-test.mjs --hold 2000        # each call holds the worker for 2s (synthetic delay)
 //
@@ -27,7 +28,8 @@ function parseArgs() {
   const args = process.argv.slice(2);
   const opts = {
     concurrency: 20,
-    tool: 'inspect-members',
+    tool: 'city-briefing',
+    city: 'London',
     waves: 1,
     hold: 0,
     port: 0,
@@ -35,13 +37,15 @@ function parseArgs() {
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--concurrency' && args[i + 1]) opts.concurrency = Number(args[++i]);
     if (args[i] === '--tool' && args[i + 1]) opts.tool = args[++i];
+    if (args[i] === '--city' && args[i + 1]) opts.city = args[++i];
     if (args[i] === '--waves' && args[i + 1]) opts.waves = Number(args[++i]);
     if (args[i] === '--hold' && args[i + 1]) opts.hold = Number(args[++i]);
     if (args[i] === '--port' && args[i + 1]) opts.port = Number(args[++i]);
     if (args[i] === '--help') {
       console.log(`Usage: node tests/load-test.mjs [options]
   --concurrency N   concurrent requests per wave (default: 20)
-  --tool NAME       MCP tool to call (default: inspect-members)
+  --tool NAME       MCP tool to call (default: city-briefing)
+  --city NAME       city for city-briefing tool (default: London)
   --waves N         number of sequential waves (default: 1)
   --hold MS         synthetic hold time per call in ms (default: 0)
   --port N          MCP server port (default: random)`);
@@ -54,7 +58,7 @@ function parseArgs() {
 // ---------------------------------------------------------------------------
 // Single MCP tool call — returns timing + result metadata
 // ---------------------------------------------------------------------------
-async function callOnce(mcpUrl, toolName, callId) {
+async function callOnce(mcpUrl, toolName, toolArgs, callId) {
   const start = performance.now();
   let dispatchedAt = null;
   let workerId = null;
@@ -68,7 +72,7 @@ async function callOnce(mcpUrl, toolName, callId) {
     dispatchedAt = performance.now();
 
     const result = await client.callTool(
-      { name: toolName, arguments: {} },
+      { name: toolName, arguments: toolArgs },
       {
         onprogress(update) {
           if (update.message?.startsWith('queued')) {
@@ -83,12 +87,9 @@ async function callOnce(mcpUrl, toolName, callId) {
     if (result.isError) {
       error = result.content?.[0]?.text ?? 'unknown error';
     } else {
-      try {
-        const body = JSON.parse(result.content[0].text);
-        workerId = body.workerId ?? null;
-      } catch {
-        workerId = '(non-json response)';
-      }
+      const allText = (result.content ?? []).map((p) => p.text ?? '').join('\n');
+      const workerMatch = allText.match(/\[worker:([\w-]+)\]/);
+      if (workerMatch) workerId = workerMatch[1];
     }
 
     if (workerId) {
@@ -128,12 +129,12 @@ async function callOnce(mcpUrl, toolName, callId) {
 // ---------------------------------------------------------------------------
 // Wave runner
 // ---------------------------------------------------------------------------
-async function runWave(mcpUrl, toolName, concurrency, waveNum) {
+async function runWave(mcpUrl, toolName, toolArgs, concurrency, waveNum) {
   console.log(`\n--- Wave ${waveNum}: ${concurrency} concurrent calls to "${toolName}" ---\n`);
   const waveStart = performance.now();
   const promises = [];
   for (let i = 0; i < concurrency; i++) {
-    promises.push(callOnce(mcpUrl, toolName, `w${waveNum}-${i + 1}`));
+    promises.push(callOnce(mcpUrl, toolName, toolArgs, `w${waveNum}-${i + 1}`));
   }
   const results = await Promise.all(promises);
   const waveMs = Math.round(performance.now() - waveStart);
@@ -255,15 +256,18 @@ const port = mcpHandle.server.address().port;
 const mcpUrl = new URL(`http://127.0.0.1:${port}/mcp`);
 console.log(`MCP server ready at ${mcpUrl} (capacity: ${poolSize + ephemeralMax})`);
 
-// If --hold is set, inject a synthetic delay tool that wraps the real one
 let toolName = opts.tool;
+const toolArgs = {};
+if (toolName === 'city-briefing') toolArgs.city = opts.city;
 if (opts.hold > 0) {
   console.log(`Synthetic hold: each call will hold the worker for ${opts.hold}ms`);
 }
 
+console.log(`Tool: ${toolName}${toolArgs.city ? ` (city: ${toolArgs.city})` : ''}`);
+
 try {
   for (let w = 1; w <= opts.waves; w++) {
-    const wave = await runWave(mcpUrl, toolName, opts.concurrency, w);
+    const wave = await runWave(mcpUrl, toolName, toolArgs, opts.concurrency, w);
     printReport(wave, w, config);
   }
 } finally {

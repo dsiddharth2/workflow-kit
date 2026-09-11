@@ -42,7 +42,7 @@ export function buildMcpServer({ fleetApi, dispatcher, registry = defaultRegistr
       const reportPhase = makePhaseReporter(ctx);
       const lease = await dispatcher.dispatch({ signal: ctx.mcpReq.signal, reportPhase });
       try {
-        return toToolResult(
+        const result = toToolResult(
           await entry.run({
             fleetApi: createPooledFleetApi(fleetApi, lease),
             args,
@@ -51,6 +51,8 @@ export function buildMcpServer({ fleetApi, dispatcher, registry = defaultRegistr
             workspace: { workerId: lease.workerId, doer: lease.doer, reviewer: lease.reviewer },
           }),
         );
+        result.content.push({ type: 'text', text: `\n[worker:${lease.workerId}]` });
+        return result;
       } finally {
         await lease.release();
       }
