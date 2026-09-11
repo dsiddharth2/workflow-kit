@@ -32,18 +32,19 @@ is a machine install, not a project dependency.
 
 ### Members and OAuth
 
-The demo launcher registers `DEMO-DOER` when it calls `spawnFleet()`. Live `agent()`
-calls need `CLAUDE_CODE_OAUTH_TOKEN` in the environment so the child process can attach
-it via `provision_llm_auth`:
+Node registers pool members (`WORKER-{i}-DOER` / `-REVIEWER`) when the dispatcher
+starts. Workflows address `'doer'` and `'reviewer'` on the leased pair. Live
+`agent()` calls need `CLAUDE_CODE_OAUTH_TOKEN` in the environment so
+`MemberManager` can attach it via `provision_llm_auth`:
 
 ```bash
 export CLAUDE_CODE_OAUTH_TOKEN="$(claude setup-token)"
 ```
 
-`scripts/provision-members.sh` is still useful when you want `DEMO-REVIEWER` (and the
-doer) present in Fleet's shared data dir — for example `inspect-members` against a
-machine that already has those members. Docker's entrypoint still runs it. `--type local`
-is required if you register by hand; the default is remote and demands a `host`.
+There is no provisioning script on the startup path. Docker's entrypoint only
+installs deps and execs Node; registration happens in `pool/member-manager.mjs`.
+`--type local` is required if you register by hand; the default is remote and
+demands a `host`.
 
 Re-export a fresh token when you see `OAuth session expired`.
 
@@ -55,16 +56,18 @@ If `apra-fleet` is not on PATH, set `APRA_FLEET_BIN` to the binary.
 |---|---|---|
 | `npm test` | no | no |
 | `node --test tests/transport-stdio-fleet.test.mjs` | no | no |
+| `node --test tests/pool-*.test.mjs` | no | no |
 | `node --test tests/demo.test.mjs` | no | no |
 | `node --test tests/inspect-members.test.mjs` | no | no |
 | `node --test tests/mcp.test.mjs` | no | no |
 | `node --test tests/stdio-fleet.live.test.mjs` | yes (skips otherwise) | no |
 | `node --test tests/mcp.live.test.mjs` | yes | no |
 | `node --test tests/demo.live.test.mjs` | yes | yes |
+| `node --test tests/dispatch.live.test.mjs` | yes | yes |
 | `node workflows/demo/main.mjs` | yes | yes |
 | `npm run mcp` | yes | only for `demo` |
 | `python3 workflows/demo/dummy.py` | no | no |
-| `python3 workflows/inspect-members/inspect.py --root workdir/DEMO-DOER`  | no | no |
+| `python3 workflows/inspect-members/inspect.py --root <work-folder>` | no | no |
 
 A successful live workflow run prints `agent result: pong` and **returns to the shell**
 with exit 0. If it prints `pong` and hangs, the transport was not stopped — check the
@@ -85,14 +88,15 @@ configuration.
 
 Tests split by what they need, and the split is the point.
 
-**Mock tests** (`tests/transport-stdio-fleet.test.mjs`, `tests/demo.test.mjs`,
-`tests/inspect-members.test.mjs`) run anywhere — no Fleet binary, no members, no
-tokens, no network. They work because the launchers accept an injected `fleetApi`, and
-the transport wrapper is unit-tested against a fake MCP client.
+**Mock tests** (`tests/transport-stdio-fleet.test.mjs`, the `tests/pool-*.test.mjs`
+files, `tests/demo.test.mjs`, `tests/inspect-members.test.mjs`) run anywhere — no
+Fleet binary, no members, no tokens, no network. They work because the launchers
+accept an injected `fleetApi`, and the transport wrapper is unit-tested against a
+fake MCP client.
 
 `tests/mcp.test.mjs` also needs no Fleet binary or token. It drives a real MCP client
 over a real ephemeral port against the HTTP application, with Fleet mocked underneath.
-Those four files are what `npm test` runs, and what you should run constantly.
+Those files are what `npm test` runs, and what you should run constantly.
 
 The workflow mock is a hand-written object implementing the methods the body actually
 uses (`fleetStatus`, `executeCommand`, `executePrompt`) and recording its calls. It
@@ -106,8 +110,10 @@ stdio child, registers a temp member, and calls `fleetStatus` / `listMembers`. I
 when `apra-fleet` is not installed. `tests/mcp.live.test.mjs` starts the MCP server
 (which spawns Fleet) and calls `inspect-members` without spending tokens.
 `tests/demo.live.test.mjs` runs the full workflow against a real member with a real
-token, asserting `hello-from-python`, the transform payload, and `pong`. Run live tests
-before merging changes that touch the Fleet integration, not on every save.
+token, asserting `hello-from-python`, the transform payload, and `pong`.
+`tests/dispatch.live.test.mjs` proves pool → ephemeral → queue against a real Fleet
+(two pool workers, two ephemeral, two queued). It is not part of `npm test`. Run live
+tests before merging changes that touch the Fleet integration, not on every save.
 
 `tests/setup-fleet-modules.mjs` calls `ensureApralabs()` before any test imports Fleet
 packages; import it first in any new test file that pulls in a launcher.
@@ -123,33 +129,25 @@ Follow the existing shape rather than inventing a new one.
 **1. Create the launcher and body.** Copy the split from `workflows/demo/`: a
 `main.mjs` that owns spawn, transport cleanup and the exported entry function, and
 a body file that only knows how to do the work given the engine `context`. The entry
-function must accept `{ fleetApi }` so it stays testable.
+function must accept `{ fleetApi, workspace }` so it stays testable. Address
+`'doer'` and `'reviewer'`, never a hardcoded member name.
 
 ```js
-export async function runMyWorkflow({ fleetApi } = {}) {
+import { withStandaloneLease } from '../standalone.mjs';
+import { ensureApralabs } from '../demo/ensure-apralabs.mjs';
+
+export async function runMyWorkflow({ fleetApi, workspace, signal, reportPhase } = {}) {
   ensureApralabs();
-  let api = fleetApi;
-  let stop = null;
-  if (!api) {
-    const { spawnFleet } = await import('../../transport/stdio-fleet.mjs');
-    const fleet = await spawnFleet({
-      memberName: 'MY-DOER',
-      workFolder: path.join(repoRoot, 'workdir', 'MY-DOER'),
-    });
-    api = fleet.fleetApi;
-    stop = fleet.stop;
+  if (!fleetApi) {
+    return withStandaloneLease((ctx) => runMyWorkflow({ ...ctx, reportPhase }));
   }
-  try {
-    // …execute the body
-  } finally {
-    await stop?.();
-  }
+  // …execute the body
 }
 ```
 
 **2. Write a mock test first.** Reuse the mock-client pattern. Assert the calls you care
-about — which members, which commands, which prompts. Do not put registration in the
-body if `spawnFleet()` already owns it.
+about — which roles, which commands, which prompts. Do not put registration in the
+body; `withStandaloneLease` / MemberManager own spawn and registration.
 
 **3. Expose it as an MCP tool, if it should be.** Append an entry to `defaultRegistry`
 in `mcp/registry.mjs`:
@@ -160,8 +158,8 @@ in `mcp/registry.mjs`:
   description: 'What this does and when a model should choose it.',
   inputSchema: z.object({ target: z.string().describe('What to act on') }),
   annotations: { readOnlyHint: true },
-  async run({ fleetApi, args, signal, reportPhase }) {
-    return await runMyWorkflow({ fleetApi, signal, reportPhase, target: args.target });
+  async run({ fleetApi, args, signal, reportPhase, workspace }) {
+    return await runMyWorkflow({ fleetApi, signal, reportPhase, workspace, target: args.target });
   },
 }
 ```
@@ -171,11 +169,10 @@ be unique, `inputSchema` must be a `z.object(...)`, and omitting `inputSchema` d
 a no-argument tool. Write `description` for the connected model deciding whether to
 choose the tool. A thrown `run` automatically becomes an MCP `isError` result.
 
-**4. Register new members if you need them.** Each gets its own folder under `workdir/`,
-and a `spawnFleet({ memberName, workFolder })` call in the launcher. Use unique names —
-Fleet's data dir may already hold members from other projects, and `DEMO-*` is only a
-dummy prefix. `scripts/provision-members.sh` can still pre-register names into that
-shared data dir (Docker does this).
+**4. Workers are leased, not hardcoded.** Workflows address `'doer'` and `'reviewer'`.
+The dispatcher registers pool members at startup from `WORKER_POOL_SIZE`. Do not
+put registration in the body, and do not hardcode member names. There is no
+provisioning script on the startup path.
 
 ## Conventions
 
@@ -202,10 +199,9 @@ commits.
 ## Docker
 
 Build once, run, done. The image installs Fleet, Claude Code, and project dependencies.
-The entrypoint still starts an HTTP Fleet server and runs `provision-members.sh` so
-`DEMO-DOER` / `DEMO-REVIEWER` exist in the shared data dir and the OAuth token is
-attached. The MCP / workflow process then spawns its own stdio Fleet child, which sees
-that same data dir.
+The entrypoint installs deps and links packages; it does **not** register members.
+Node's `MemberManager` registers the worker pool and attaches `CLAUDE_CODE_OAUTH_TOKEN`
+when the MCP process starts.
 
 ### Quick start
 
@@ -225,9 +221,9 @@ Pass an OAuth token for live `agent()` calls:
 CLAUDE_CODE_OAUTH_TOKEN="$(claude setup-token)" docker compose up
 ```
 
-The token is passed as an environment variable, written into Fleet's credential store
-by the provision script, and inherited by the stdio child — nothing is saved to disk
-in this repo.
+The token is passed as an environment variable. Node attaches it to pool members at
+startup via `provision_llm_auth`, and the stdio child inherits it — nothing is saved
+to disk in this repo.
 
 Override the host port with `MCP_PORT`:
 
@@ -242,8 +238,9 @@ docker compose run --rm fleet node workflows/demo/main.mjs      # live workflow 
 docker compose run --rm fleet node --test tests/demo.test.mjs   # mock tests
 ```
 
-Passing `--test` skips the entrypoint's HTTP Fleet startup and member provisioning.
-Mock tests do not need it. Live runs still spawn stdio Fleet from the launcher.
+Passing `--test` still uses the same entrypoint (deps + symlink + exec). Mock tests
+do not need a Fleet child. Live runs spawn stdio Fleet from the launcher or MCP
+server.
 
 ### How it works
 
@@ -251,11 +248,11 @@ The entrypoint runs automatically on every container start:
 
 1. Installs project deps if the named volume is empty (first run)
 2. Symlinks `@apralabs` packages so workflows resolve them
-3. Starts an HTTP Fleet server and waits up to 60 seconds for it to be ready
-4. Provisions members and attaches the OAuth token into the shared data dir
+3. Execs the container command (MCP server by default)
 
-The kit process does not connect to that HTTP server. It spawns `apra-fleet run
---transport stdio`. The HTTP start remains so provisioning has a server to talk to.
+Member registration and OAuth happen in Node (`createWorkerDispatcher` /
+`MemberManager`) after the process starts and spawns `apra-fleet run --transport
+stdio`. The entrypoint no longer starts an HTTP Fleet server.
 
 The compose file sets `MCP_BIND_HOST=0.0.0.0` so the MCP server is reachable from the
 host. The default bind address remains `127.0.0.1` for local development outside Docker.

@@ -9,6 +9,8 @@ services:
     environment:
       CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
       MCP_BIND_HOST: "0.0.0.0"
+      WORKER_POOL_SIZE: ${WORKER_POOL_SIZE:-4}
+      WORKER_EPHEMERAL_MAX: ${WORKER_EPHEMERAL_MAX:-10}
     # Default: MCP server. Fleet is spawned over stdio on demand.
     # Override for anything else:
     #   docker compose run --rm fleet node workflows/demo/main.mjs

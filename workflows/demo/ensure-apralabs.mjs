@@ -12,7 +12,7 @@ function findApralabsSource() {
     fs.existsSync(fleetLocal) &&
     fs.existsSync(path.join(fleetLocal, 'apra-fleet-workflow'))
   ) {
-    return fleetLocal;
+    return { scope: fleetLocal };
   }
 
   // npm global prefix — where `npm install -g @apralabs/apra-fleet` lands.
@@ -23,10 +23,22 @@ function findApralabsSource() {
       fs.existsSync(npmGlobal) &&
       fs.existsSync(path.join(npmGlobal, 'apra-fleet-workflow'))
     ) {
-      return npmGlobal;
+      return { scope: npmGlobal };
+    }
+
+    // Monorepo layout: the workflow package lives inside apra-fleet/packages/.
+    const monorepo = path.join(npmGlobal, 'apra-fleet', 'packages');
+    if (fs.existsSync(path.join(monorepo, 'apra-fleet-workflow'))) {
+      return { monorepo };
     }
   } catch {
     // npm not available or errored — skip this source.
+  }
+
+  // Same monorepo check under ~/.apra-fleet.
+  const localMonorepo = path.join(fleetLocal, 'apra-fleet', 'packages');
+  if (fs.existsSync(path.join(localMonorepo, 'apra-fleet-workflow'))) {
+    return { monorepo: localMonorepo };
   }
 
   return null;
@@ -34,9 +46,9 @@ function findApralabsSource() {
 
 export function ensureApralabs() {
   const destDir = path.join(repoRoot, 'node_modules');
-  const dest = path.join(destDir, '@apralabs');
+  const scopeDest = path.join(destDir, '@apralabs');
 
-  if (fs.existsSync(path.join(dest, 'apra-fleet-workflow'))) {
+  if (fs.existsSync(path.join(scopeDest, 'apra-fleet-workflow'))) {
     return;
   }
 
@@ -47,18 +59,39 @@ export function ensureApralabs() {
     );
   }
 
-  fs.mkdirSync(destDir, { recursive: true });
+  fs.mkdirSync(scopeDest, { recursive: true });
 
-  let destIsCorrect = false;
-  try {
-    destIsCorrect = fs.existsSync(dest) && fs.realpathSync(dest) === fs.realpathSync(src);
-  } catch {
-    destIsCorrect = false;
-  }
+  if (src.scope) {
+    // Flat layout: symlink the whole @apralabs scope directory.
+    let destIsCorrect = false;
+    try {
+      destIsCorrect = fs.existsSync(scopeDest) && fs.realpathSync(scopeDest) === fs.realpathSync(src.scope);
+    } catch {
+      destIsCorrect = false;
+    }
 
-  if (!destIsCorrect) {
-    fs.rmSync(dest, { recursive: true, force: true });
-    // 'junction' needs no admin rights on Windows; the type arg is ignored on POSIX.
-    fs.symlinkSync(src, dest, 'junction');
+    if (!destIsCorrect) {
+      fs.rmSync(scopeDest, { recursive: true, force: true });
+      fs.symlinkSync(src.scope, scopeDest, 'junction');
+    }
+  } else {
+    // Monorepo layout: symlink each package individually.
+    const pkgs = fs.readdirSync(src.monorepo).filter(
+      (name) => fs.statSync(path.join(src.monorepo, name)).isDirectory(),
+    );
+    for (const pkg of pkgs) {
+      const pkgDest = path.join(scopeDest, pkg);
+      const pkgSrc = path.join(src.monorepo, pkg);
+      let correct = false;
+      try {
+        correct = fs.existsSync(pkgDest) && fs.realpathSync(pkgDest) === fs.realpathSync(pkgSrc);
+      } catch {
+        correct = false;
+      }
+      if (!correct) {
+        fs.rmSync(pkgDest, { recursive: true, force: true });
+        fs.symlinkSync(pkgSrc, pkgDest, 'junction');
+      }
+    }
   }
 }

@@ -78,6 +78,9 @@ export async function createFleetApi(client) {
   if (available.has('remove_member')) {
     api.removeMember = (opts) => call('remove_member', opts);
   }
+  if (available.has('provision_llm_auth')) {
+    api.provisionLlmAuth = (opts) => call('provision_llm_auth', opts);
+  }
   return api;
 }
 

@@ -203,3 +203,25 @@ test('spawnFleet passes stdio args and OAuth env to the transport', async () => 
   assert.equal(captures.transportParams.env.CLAUDE_CODE_OAUTH_TOKEN, 'tok');
   await stop();
 });
+
+test('createFleetApi exposes provisionLlmAuth and removeMember only when Fleet has them', async () => {
+  const withBoth = await createFleetApi(
+    createMockClient({ tools: [...FLEET_TOOLS, 'remove_member'] }),
+  );
+  assert.equal(typeof withBoth.provisionLlmAuth, 'function');
+  assert.equal(typeof withBoth.removeMember, 'function');
+
+  const client = createMockClient({ tools: [...FLEET_TOOLS, 'remove_member'] });
+  const api = await createFleetApi(client);
+  await api.provisionLlmAuth({ member_name: 'WORKER-1-DOER' });
+  await api.removeMember({ member_name: 'WORKER-1-DOER' });
+  assert.equal(client.calls[0].name, 'provision_llm_auth');
+  assert.deepEqual(client.calls[0].arguments, { member_name: 'WORKER-1-DOER' });
+  assert.equal(client.calls[1].name, 'remove_member');
+
+  const minimal = await createFleetApi(
+    createMockClient({ tools: FLEET_TOOLS.filter((name) => name !== 'provision_llm_auth') }),
+  );
+  assert.equal(minimal.provisionLlmAuth, undefined);
+  assert.equal(minimal.removeMember, undefined);
+});

@@ -1,33 +1,46 @@
 import path from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { pathToFileURL } from 'node:url';
+import { createWorkerDispatcher } from '../pool/index.mjs';
 import { ensureApralabs } from '../workflows/demo/ensure-apralabs.mjs';
 import { createMcpHttpApp } from './http.mjs';
 import { buildMcpServer } from './server.mjs';
 
-export async function startMcpServer({ fleetApi, port } = {}) {
+export async function startMcpServer({ fleetApi, dispatcher, port, env = process.env, registry } = {}) {
   ensureApralabs();
 
   let api = fleetApi;
   let stopFleet = null;
   if (!api) {
-    const { spawnFleet, ensureRegistered } = await import('../transport/stdio-fleet.mjs');
-    const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-    const workdir = path.join(repoRoot, 'workdir');
-    const fleet = await spawnFleet({
-      memberName: 'DEMO-DOER',
-      workFolder: path.join(workdir, 'DEMO-DOER'),
-    });
+    const { spawnFleet } = await import('../transport/stdio-fleet.mjs');
+    // No memberName: registration and OAuth are MemberManager's job.
+    const fleet = await spawnFleet({ env });
     api = fleet.fleetApi;
     stopFleet = fleet.stop;
-
-    // Register the reviewer too — inspect-members reports on both, and the
-    // provisioning script no longer runs at startup.
-    await ensureRegistered(api, 'DEMO-REVIEWER', path.join(workdir, 'DEMO-REVIEWER'));
   }
 
-  const app = createMcpHttpApp({ buildServer: () => buildMcpServer({ fleetApi: api }) });
-  const listenPort = port ?? Number(process.env.PORT ?? 3000);
-  const bindHost = process.env.MCP_BIND_HOST || '127.0.0.1';
+  // One dispatcher per process, built once at startup. A roster failure here
+  // is deliberately fatal: better a loud startup error than an agent() call
+  // failing deep inside a run.
+  let ownDispatcher = null;
+  let activeDispatcher = dispatcher;
+  if (!activeDispatcher) {
+    try {
+      activeDispatcher = ownDispatcher = await createWorkerDispatcher({ fleetApi: api, env });
+    } catch (err) {
+      try {
+        await stopFleet?.();
+      } catch {
+        // Preserve the dispatcher error after best-effort Fleet cleanup.
+      }
+      throw err;
+    }
+  }
+
+  const app = createMcpHttpApp({
+    buildServer: () => buildMcpServer({ fleetApi: api, dispatcher: activeDispatcher, registry }),
+  });
+  const listenPort = port ?? Number(env.PORT ?? 3000);
+  const bindHost = env.MCP_BIND_HOST || '127.0.0.1';
   let server;
   try {
     server = app.listen(listenPort, bindHost);
@@ -52,16 +65,30 @@ export async function startMcpServer({ fleetApi, port } = {}) {
       }
     }
     try {
+      await ownDispatcher?.close();
+    } catch {
+      // Preserve the listener error after best-effort dispatcher cleanup.
+    }
+    try {
       await stopFleet?.();
     } catch {
       // Preserve the listener error after best-effort Fleet cleanup.
     }
     throw err;
   }
-  console.log(`MCP server listening on http://${bindHost}:${server.address().port}/mcp`);
+  console.log(
+    `MCP server listening on http://${bindHost}:${server.address().port}/mcp ` +
+      `(worker capacity ${activeDispatcher.capacity})`,
+  );
 
+  let closed = false;
   const close = async () => {
+    if (closed) return;
+    closed = true;
+    // Fail queued waiters first so HTTP drain is not stuck behind queueTimeoutMs.
+    activeDispatcher.beginShutdown();
     await new Promise((resolve) => server.close(resolve));
+    await ownDispatcher?.close();
     await stopFleet?.();
   };
   return { server, close };

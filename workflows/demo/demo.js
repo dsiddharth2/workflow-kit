@@ -28,6 +28,10 @@ export async function main(context) {
   const reportPhase = args.reportPhase ?? (() => {});
   const cancelled = () => signal?.aborted === true;
 
+  // 'doer' and 'reviewer' are reserved keywords resolved by PooledFleetApi to
+  // this run's own leased members. Never name a member directly.
+  log(`running on ${args.workspace?.workerId ?? 'unknown worker'} as ${args.workspace?.doer?.name ?? 'doer'}`);
+
   phase('status');
   await reportPhase('reading fleet status');
   log(toolText(await fleetApi.fleetStatus()));
@@ -36,7 +40,7 @@ export async function main(context) {
   phase('python command');
   await reportPhase('running the python command');
   const cmdResult = await command(`python3 "${DUMMY_PY}"`, {
-    member_name: 'DEMO-DOER',
+    member_name: 'doer',
     failSoft: true,
   });
   log(`command result: ${typeof cmdResult === 'string' ? cmdResult : JSON.stringify(cmdResult)}`);
@@ -51,7 +55,7 @@ export async function main(context) {
   phase('agent smoke');
   await reportPhase('dispatching the agent prompt');
   if (cancelled()) return { cancelled: true, command: cmdResult, transform: payload };
-  const reply = await agent('Reply with exactly: pong', { member_name: 'DEMO-DOER' });
+  const reply = await agent('Reply with exactly: pong', { member_name: 'doer' });
   log(`agent result: ${reply}`);
 
   return { command: cmdResult, transform: payload, agent: reply };

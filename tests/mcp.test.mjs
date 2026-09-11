@@ -2,9 +2,15 @@ import './setup-fleet-modules.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
+import fs from 'node:fs/promises';
 import { createServer as createHttpServer, request as httpRequest } from 'node:http';
+import os from 'node:os';
+import path from 'node:path';
 import * as z from 'zod/v4';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
+import { WorkerDispatcher } from '../pool/worker-dispatcher.mjs';
+import { WorkerPool } from '../pool/worker-pool.mjs';
+import { createMockFleetApi as createSharedMock, rosterNames } from './helpers/mock-fleet.mjs';
 
 const { buildMcpServer } = await import('../mcp/server.mjs');
 const { createMcpHttpApp } = await import('../mcp/http.mjs');
@@ -35,37 +41,28 @@ function mockPayloadForCommand(command) {
 }
 
 function createMockFleetApi() {
-  const commandCalls = [];
-  const promptCalls = [];
-  return {
-    commandCalls,
-    promptCalls,
-    async fleetStatus() {
-      return {
-        content: [{ type: 'text', text: 'DEMO-DOER\nDEMO-REVIEWER' }],
-      };
-    },
-    async executeCommand(options) {
-      commandCalls.push(options);
-      const payload = mockPayloadForCommand(options.command ?? '');
-      return {
-        content: [{ type: 'text', text: payload }],
-        structuredContent: { stdout: payload, exitCode: 0 },
-      };
-    },
-    async executePrompt(options) {
-      promptCalls.push(options);
-      return { content: [{ type: 'text', text: 'pong' }], structuredContent: { response: 'pong' } };
-    },
-  };
+  return createSharedMock({
+    members: rosterNames(2),
+    commandPayload: (options) => mockPayloadForCommand(options.command ?? ''),
+  });
+}
+
+async function makeDispatcher() {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mcp-test-pool-'));
+  return new WorkerDispatcher({
+    pool: WorkerPool.create({ config: { size: 2, root, acquireTimeoutMs: 5000 } }),
+    ephemeral: null,
+    config: { maxQueueSize: 4, queueTimeoutMs: 5000 },
+  });
 }
 
 // Starts the real express app on an ephemeral port and connects a real MCP
 // client over streamable HTTP, so the transport wiring is exercised too.
 async function withServer(registryOverride, run) {
   const fleetApi = createMockFleetApi();
+  const dispatcher = await makeDispatcher();
   const app = createMcpHttpApp({
-    buildServer: () => buildMcpServer({ fleetApi, registry: registryOverride }),
+    buildServer: () => buildMcpServer({ fleetApi, dispatcher, registry: registryOverride }),
   });
   const httpServer = app.listen(0, '127.0.0.1');
   await new Promise((resolve, reject) => {
@@ -77,12 +74,13 @@ async function withServer(registryOverride, run) {
   try {
     await client.connect(new StreamableHTTPClientTransport(url));
     try {
-      await run({ client, fleetApi });
+      await run({ client, fleetApi, dispatcher });
     } finally {
       await client.close();
     }
   } finally {
     await new Promise((resolve) => httpServer.close(resolve));
+    await dispatcher.close();
   }
 }
 
@@ -109,7 +107,7 @@ test('startMcpServer rejects a real port collision', async () => {
     const port = occupyingServer.address().port;
     await assert.rejects(
       within(
-        startMcpServer({ fleetApi: createMockFleetApi(), port }),
+        startMcpServer({ fleetApi: createMockFleetApi(), dispatcher: await makeDispatcher(), port }),
         1_000,
         'timed out waiting for the port collision to reject',
       ),
@@ -121,11 +119,94 @@ test('startMcpServer rejects a real port collision', async () => {
 });
 
 test('startMcpServer removes its startup error listener after listening', async () => {
-  const { server, close } = await startMcpServer({ fleetApi: createMockFleetApi(), port: 0 });
+  const { server, close } = await startMcpServer({
+    fleetApi: createMockFleetApi(),
+    dispatcher: await makeDispatcher(),
+    port: 0,
+  });
   try {
     assert.equal(server.listenerCount('error'), 0);
   } finally {
     await close();
+  }
+});
+
+test('shutdown rejects queued dispatches before waiting for HTTP to drain', async () => {
+  let releaseHold;
+  const held = new Promise((resolve) => {
+    releaseHold = resolve;
+  });
+  let resolveStarted;
+  const started = new Promise((resolve) => {
+    resolveStarted = resolve;
+  });
+  const registry = [
+    {
+      name: 'hold',
+      description: 'holds the only worker',
+      async run() {
+        resolveStarted();
+        await held;
+        return 'held';
+      },
+    },
+    {
+      name: 'next',
+      description: 'queues behind hold',
+      async run() {
+        return 'next';
+      },
+    },
+  ];
+  const fleetApi = createMockFleetApi();
+  const dispatcher = new WorkerDispatcher({
+    pool: WorkerPool.create({
+      config: { size: 1, root: await fs.mkdtemp(path.join(os.tmpdir(), 'mcp-shutdown-')), acquireTimeoutMs: 5000 },
+    }),
+    ephemeral: null,
+    config: { maxQueueSize: 4, queueTimeoutMs: 5000 },
+  });
+  const { server, close } = await startMcpServer({ fleetApi, dispatcher, port: 0, registry });
+  const url = new URL(`http://127.0.0.1:${server.address().port}/mcp`);
+  const clientA = new Client({ name: 'shutdown-a', version: '1.0.0' });
+  const clientB = new Client({ name: 'shutdown-b', version: '1.0.0' });
+  let holdCall;
+  let nextCall;
+  let shuttingDown;
+  try {
+    await clientA.connect(new StreamableHTTPClientTransport(url));
+    await clientB.connect(new StreamableHTTPClientTransport(new URL(url)));
+    holdCall = clientA.callTool({ name: 'hold' });
+    await within(started, 1_000, 'timed out waiting for hold to start');
+    nextCall = clientB.callTool({ name: 'next' });
+    await within(
+      (async () => {
+        while (dispatcher.queued < 1) await new Promise((resolve) => setTimeout(resolve, 10));
+      })(),
+      1_000,
+      'timed out waiting for next to queue',
+    );
+
+    shuttingDown = close();
+    const nextResult = await within(
+      nextCall,
+      800,
+      'queued dispatch should reject promptly when shutdown begins',
+    );
+    assert.equal(nextResult.isError, true);
+    assert.match(nextResult.content[0].text, /shutting down/);
+    releaseHold();
+    await holdCall;
+    try { await clientA.close(); } catch { /* already closed */ }
+    try { await clientB.close(); } catch { /* already closed */ }
+    await shuttingDown;
+  } finally {
+    releaseHold?.();
+    await Promise.allSettled([holdCall, nextCall, shuttingDown].filter(Boolean));
+    try { await clientA.close(); } catch { /* server may already be down */ }
+    try { await clientB.close(); } catch { /* server may already be down */ }
+    try { await close(); } catch { /* idempotent best-effort */ }
+    await dispatcher.close();
   }
 });
 
@@ -138,11 +219,8 @@ test('advertises exactly the registry tools, with schemas and annotations', asyn
     );
 
     const inspect = tools.find((tool) => tool.name === 'inspect-members');
-    assert.deepEqual(Object.keys(inspect.inputSchema.properties).sort(), ['includeFiles', 'members']);
-    assert.deepEqual(inspect.inputSchema.properties.members.items.enum, [
-      'DEMO-DOER',
-      'DEMO-REVIEWER',
-    ]);
+    assert.deepEqual(Object.keys(inspect.inputSchema.properties).sort(), ['includeFiles', 'roles']);
+    assert.deepEqual(inspect.inputSchema.properties.roles.items.enum, ['doer', 'reviewer']);
     assert.equal(inspect.annotations.readOnlyHint, true);
 
     const demo = tools.find((tool) => tool.name === 'demo');
@@ -173,18 +251,19 @@ test('calling demo runs the workflow', async () => {
   });
 });
 
-test('calling inspect-members with one member touches only that member', async () => {
+test('calling inspect-members with one role touches only that role', async () => {
   await withServer(undefined, async ({ client, fleetApi }) => {
     const result = await client.callTool({
       name: 'inspect-members',
-      arguments: { members: ['DEMO-DOER'] },
+      arguments: { roles: ['doer'] },
     });
     assert.equal(result.isError, undefined);
     assert.equal(fleetApi.commandCalls.length, 1);
-    assert.equal(fleetApi.commandCalls[0].member_name, 'DEMO-DOER');
+    assert.equal(fleetApi.commandCalls[0].member_name, 'WORKER-1-DOER');
 
     const report = JSON.parse(result.content[0].text);
-    assert.deepEqual(report.members.map((entry) => entry.name), ['DEMO-DOER']);
+    assert.equal(report.workerId, 'pool-1');
+    assert.deepEqual(report.members.map((entry) => entry.name), ['WORKER-1-DOER']);
   });
 });
 
@@ -276,7 +355,7 @@ test('calling weather returns parsed weather data', async () => {
     assert.equal(data.location, 'London, United Kingdom');
     assert.equal(fleetApi.commandCalls.length, 1);
     assert.match(fleetApi.commandCalls[0].command, /weather\.py.*Paris/);
-    assert.equal(fleetApi.commandCalls[0].member_name, 'DEMO-DOER');
+    assert.equal(fleetApi.commandCalls[0].member_name, 'WORKER-1-DOER');
   });
 });
 
@@ -348,9 +427,10 @@ test('disconnecting a client closes the request server and aborts its workflow',
     },
   ];
   const fleetApi = createMockFleetApi();
+  const dispatcher = await makeDispatcher();
   const app = createMcpHttpApp({
     buildServer: () => {
-      const server = buildMcpServer({ fleetApi, registry });
+      const server = buildMcpServer({ fleetApi, dispatcher, registry });
       server.server.onclose = resolveClosed;
       return server;
     },
@@ -392,5 +472,40 @@ test('disconnecting a client closes the request server and aborts its workflow',
   } finally {
     request.destroy();
     await new Promise((resolve) => httpServer.close(resolve));
+    await dispatcher.close();
   }
+});
+
+test('every tool call releases its lease, even when the tool throws', async () => {
+  const registry = [
+    { name: 'boom', description: 'throws', async run() { throw new Error('nope'); } },
+    { name: 'ok', description: 'works', async run({ workspace }) { return workspace.workerId; } },
+  ];
+  await withServer(registry, async ({ client, dispatcher }) => {
+    for (let i = 0; i < 3; i += 1) {
+      const failed = await client.callTool({ name: 'boom' });
+      assert.equal(failed.isError, true);
+    }
+    const ok = await client.callTool({ name: 'ok' });
+    assert.equal(ok.content[0].text, 'pool-1', 'worker 1 must be free again after failures');
+    assert.equal(dispatcher.queued, 0);
+  });
+});
+
+test('tools see a pooled fleetApi that resolves role keywords', async () => {
+  const registry = [
+    {
+      name: 'who',
+      description: 'runs a command as the doer',
+      async run({ fleetApi, workspace }) {
+        await fleetApi.executeCommand({ member_name: 'doer', command: 'echo hi' });
+        return workspace.doer.name;
+      },
+    },
+  ];
+  await withServer(registry, async ({ client, fleetApi }) => {
+    const result = await client.callTool({ name: 'who' });
+    assert.equal(result.content[0].text, 'WORKER-1-DOER');
+    assert.equal(fleetApi.commandCalls[0].member_name, 'WORKER-1-DOER');
+  });
 });
