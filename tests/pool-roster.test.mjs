@@ -29,7 +29,7 @@ test('poolConfig reads the environment', () => {
     WORKER_POOL_ACQUIRE_TIMEOUT_MS: '1000',
   });
   assert.equal(config.size, 8);
-  assert.equal(config.root, '/tmp/pool-root');
+  assert.equal(config.root, path.resolve('/tmp/pool-root'));
   assert.equal(config.acquireTimeoutMs, 1000);
 });
 

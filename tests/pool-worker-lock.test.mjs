@@ -62,7 +62,7 @@ test('a stale lock is stolen rather than waited on', async () => {
 
 test('a lock held by another process blocks this one, and frees on its exit', async () => {
   const target = await tempTarget();
-  const child = spawn(process.execPath, [holdLockScript, target], { stdio: ['ignore', 'pipe', 'inherit'] });
+  const child = spawn(process.execPath, [holdLockScript, target], { stdio: ['pipe', 'pipe', 'inherit'] });
   try {
     let output = '';
     for await (const chunk of child.stdout) {
@@ -72,7 +72,7 @@ test('a lock held by another process blocks this one, and frees on its exit', as
     assert.match(output, /locked/);
     assert.equal(await tryClaim(target), null, 'the other process holds the lock');
   } finally {
-    child.kill('SIGTERM');
+    child.stdin.end();
     await once(child, 'exit');
   }
 
