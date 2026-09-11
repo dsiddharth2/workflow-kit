@@ -80,7 +80,7 @@ jobs:
           echo "$output" >> "$GITHUB_OUTPUT"
           echo "LOAD_EOF" >> "$GITHUB_OUTPUT"
 
-      - name: Load test — city-briefing end-to-end (3 concurrent)
+      - name: Load test — city-briefing end-to-end (8 concurrent)
         id: load-e2e
         if: env.CLAUDE_CODE_OAUTH_TOKEN != ''
         env:
@@ -89,9 +89,10 @@ jobs:
           output=$(docker run --rm \
             -e CLAUDE_CODE_OAUTH_TOKEN \
             -e WORKER_POOL_SIZE=2 \
-            -e WORKER_EPHEMERAL_MAX=2 \
+            -e WORKER_EPHEMERAL_MAX=3 \
+            -e WORKER_DISPATCH_QUEUE_SIZE=10 \
             workflow-kit-ci \
-            node tests/load-test.mjs --tool city-briefing --city London --concurrency 3 2>&1 \
+            node tests/load-test.mjs --tool city-briefing --city London --concurrency 8 2>&1 \
             | grep -A 1000 '┌─')
           echo "report<<LOAD_EOF" >> "$GITHUB_OUTPUT"
           echo "$output" >> "$GITHUB_OUTPUT"
@@ -123,7 +124,7 @@ jobs:
             if (e2e) {
               sections.push(
                 '',
-                '### End-to-end city-briefing (3 concurrent, LLM + weather + timezone)',
+                '### End-to-end city-briefing (8 concurrent, LLM + weather + timezone)',
                 '```',
                 e2e,
                 '```',
